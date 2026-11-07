@@ -1,0 +1,40 @@
+name: "@omarchy/db (TypeScript)"
+
+# The TS library and both example apps on all four engines: PGlite and a real PostgreSQL 18 (postgresql apps),
+# better-sqlite3 and Miniflare's D1 (sqlite / D1 apps). On push, PR and nightly.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "27 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres  # throwaway CI container gitleaks:allow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OMARCHY_DB_TEST_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres  # throwaway CI container gitleaks:allow
+      OMARCHY_DB_URL: postgresql://postgres:postgres@localhost:5432/postgres  # throwaway CI container gitleaks:allow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Library
+        working-directory: ts
+        run: npm install && npm run build && npx vitest run
+      - name: ts-notes (Postgres app) on PGlite and Postgres, and check
+        working-directory: examples/ts-notes
+        run: npm install && npx vitest run && OMARCHY_DB_TEST_ENGINE=postgres npx vitest run && npx omarchy-db check
+      - name: ts-worker (D1 app) on SQLite and D1, and check
+        working-directory: examples/ts-worker
+        run: npm install && npx vitest run && OMARCHY_DB_TEST_ENGINE=d1 npx vitest run && npx omarchy-db check

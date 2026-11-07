@@ -1,0 +1,43 @@
+name: omarchy_db
+
+# The library and the example app, on SQLite and on a real PostgreSQL 18, on every push/PR and nightly
+# (the nightly run is the "drift between SQLite and Postgres" check from docs/PLAN.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres  # throwaway CI container gitleaks:allow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OMARCHY_DB_TEST_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres  # throwaway CI container gitleaks:allow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - name: Install
+        run: uv venv && uv pip install -e "python[test]" -e examples/notes
+      - name: Library tests (SQLite and Postgres)
+        run: $GITHUB_WORKSPACE/.venv/bin/pytest -q python
+      - name: Example app on SQLite
+        working-directory: examples/notes
+        run: $GITHUB_WORKSPACE/.venv/bin/pytest -q
+      - name: Example app on Postgres
+        working-directory: examples/notes
+        run: $GITHUB_WORKSPACE/.venv/bin/pytest -q --pg
+      - name: Example migrations match the models, on both engines
+        working-directory: examples/notes
+        run: $GITHUB_WORKSPACE/.venv/bin/dbtool check

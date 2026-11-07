@@ -1,0 +1,72 @@
+{
+  "name": "@omarchy/db",
+  "version": "0.1.0",
+  "description": "One shared PostgreSQL with a schema per app, for TypeScript: one Drizzle schema for Postgres, PGlite, SQLite and D1, migrations, drift check, vitest helpers",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./d1": {
+      "types": "./dist/d1.d.ts",
+      "default": "./dist/d1.js"
+    }
+  },
+  "bin": {
+    "omarchy-db": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.0"
+  },
+  "peerDependencies": {
+    "@electric-sql/pglite": ">=0.3",
+    "better-sqlite3": ">=11",
+    "miniflare": ">=4",
+    "pg": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "@electric-sql/pglite": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "miniflare": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261107.1",
+    "@electric-sql/pglite": "^0.5.15",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24",
+    "@types/pg": "^8.11.0",
+    "better-sqlite3": "^13.0.3",
+    "miniflare": "^4.20260730.0",
+    "pg": "^8.23.1",
+    "typescript": "~5.9.0",
+    "vitest": "^5.1.0"
+  }
+}

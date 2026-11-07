@@ -1,0 +1,15 @@
+{
+  "name": "ts-notes",
+  "private": true,
+  "type": "module",
+  "description": "Example app in TypeScript on the shared Postgres: Drizzle schema, generated migrations, tests on PGlite and Postgres",
+  "omarchy-db": { "app": "ts_notes", "dialect": "postgresql", "schemaFile": "src/schema.ts", "migrations": "migrations" },
+  "scripts": {
+    "test": "vitest run",
+    "test:postgres": "OMARCHY_DB_TEST_ENGINE=postgres vitest run",
+    "db:generate": "omarchy-db generate -m",
+    "db:check": "omarchy-db check"
+  },
+  "dependencies": { "@omarchy/db": "file:../../ts", "drizzle-orm": "^0.45.4", "pg": "^8.23.1" },
+  "devDependencies": { "@electric-sql/pglite": "^0.5.15", "vitest": "^5.1.0", "typescript": "~5.9.0", "@types/node": "^24" }
+}
