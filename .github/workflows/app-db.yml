@@ -1,0 +1,86 @@
+name: App database (reusable)
+
+# One database job for every Python app on omarchy-db, so apps do not each copy a Postgres service setup:
+#   dbtool check (migrations from empty, one head, drift, downgrade, stairway) on SQLite (portable apps) and Postgres,
+#   then the app's database tests on SQLite (portable apps) and on Postgres (--pg).
+# The Postgres is a throwaway service container (pgvector image, so apps using pgvector work too).
+#
+# In the app:  .github/workflows/database.yml
+#   on: { push: { branches: [main] }, pull_request: }
+#   jobs:
+#     database:
+#       uses: jburnhams/database/.github/workflows/app-db.yml@main
+#       with:
+#         install: pip install -r requirements-test.txt     # the app's test dependencies (omarchy-db is added here)
+#         tests: tests/unit/db                              # the tests that touch the database
+on:
+  workflow_call:
+    inputs:
+      install:
+        description: "Shell command installing the app's test dependencies into the active venv (omarchy-db itself is installed by this workflow)"
+        type: string
+        default: "true"
+      tests:
+        description: "pytest arguments selecting the database tests (paths, -k, -m)"
+        type: string
+        default: "tests"
+      pytest-args:
+        description: "Extra pytest arguments (e.g. -o addopts= to drop the app's coverage/timeout options)"
+        type: string
+        default: "-o addopts="
+      pythonpath:
+        description: "PYTHONPATH relative to the repo root, for apps not installed as a package"
+        type: string
+        default: "src"
+      python-version:
+        type: string
+        default: "3.13"
+      directory:
+        description: "The app's folder (the one with pyproject.toml), relative to the repo root"
+        type: string
+        default: "."
+      library-ref:
+        description: "jburnhams/database ref to test against"
+        type: string
+        default: "main"
+
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_PASSWORD: postgres  # throwaway CI container gitleaks:allow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: ${{ inputs.directory }}
+    env:
+      OMARCHY_DB_TEST_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres  # throwaway CI container gitleaks:allow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: jburnhams/database
+          ref: ${{ inputs.library-ref }}
+          path: ${{ inputs.directory }}/.omarchy-db
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+          activate-environment: true
+      - name: Install
+        run: |
+          uv pip install pip
+          ${{ inputs.install }}
+          uv pip install -e ".omarchy-db/python[test]"
+      - name: Migrations (dbtool check)
+        run: PYTHONPATH="$PWD/${{ inputs.pythonpath }}" dbtool check
+      - name: Database tests on SQLite
+        run: |
+          if grep -Eq '^\s*engine\s*=\s*"postgres"' pyproject.toml; then echo "engine = postgres: Postgres only"; exit 0; fi
+          PYTHONPATH="$PWD/${{ inputs.pythonpath }}" pytest -q ${{ inputs.pytest-args }} ${{ inputs.tests }}
+      - name: Database tests on Postgres
+        run: PYTHONPATH="$PWD/${{ inputs.pythonpath }}" pytest -q --pg ${{ inputs.pytest-args }} ${{ inputs.tests }}

@@ -14,6 +14,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
@@ -95,10 +96,45 @@ def drift(engine: Engine, metadata: MetaData) -> list:
         return compare_metadata(mc, metadata)
 
 
-def check_migrations(engine: Engine, migrations_dir, metadata: MetaData) -> list[str]:
-    """On an EMPTY database: upgrade from nothing to head, compare with the models, downgrade to base (every
-    downgrade must run and leave no tables), upgrade again. Returns a list of problems (empty = all good)."""
+def lint_revisions(migrations_dir) -> list[str]:
+    """Checks on the revision files alone, no database: exactly one base and one head. Two branches that each added
+    a revision on the same parent (two PRs written in parallel) leave two heads, and `upgrade head` then fails at app
+    start; this catches it in the tests instead."""
+    try:
+        script = ScriptDirectory.from_config(make_config(migrations_dir, MetaData(), None))
+        heads, bases = script.get_heads(), script.get_bases()
+    except Exception as e:
+        return [f"revision files do not form a chain: {type(e).__name__}: {str(e).splitlines()[0]}"]
     problems = []
+    if len(heads) > 1:
+        problems.append(f"{len(heads)} heads ({', '.join(sorted(heads))}): revisions written in parallel on the same "
+                        "parent; set the newer one's down_revision to the other (or write a merge revision)")
+    if len(bases) > 1:
+        problems.append(f"{len(bases)} base revisions ({', '.join(sorted(bases))}): only the first may have down_revision = None")
+    return problems
+
+
+def stairway(engine: Engine, migrations_dir, metadata: MetaData) -> list[str]:
+    """From base, one revision at a time: upgrade to it, downgrade one step, upgrade again. Catches a downgrade that
+    only works from head, or a revision that cannot be re-applied after its own downgrade (a leftover index, type or
+    sequence). Ends at head. Returns problems (empty = all good); stops at the first broken step."""
+    script = ScriptDirectory.from_config(make_config(migrations_dir, metadata, None))
+    for rev in reversed(list(script.walk_revisions())):
+        name = f"{rev.revision} ({(rev.doc or '').splitlines()[0] if rev.doc else 'no message'})"
+        for step, fn, target in (("upgrade", upgrade, rev.revision), ("downgrade one step from", downgrade, "-1"),
+                                 ("upgrade again to", upgrade, rev.revision)):
+            try: fn(engine, migrations_dir, metadata, target)
+            except Exception as e:
+                return [f"stairway: {step} {name} failed: {type(e).__name__}: {str(e).splitlines()[0]}"]
+    return []
+
+
+def check_migrations(engine: Engine, migrations_dir, metadata: MetaData) -> list[str]:
+    """On an EMPTY database: one head and one base; upgrade from nothing to head and compare with the models;
+    downgrade to base (every downgrade must run and leave no tables); then the stairway (each revision up, down one
+    step, up again), which ends at head. Returns a list of problems (empty = all good)."""
+    if problems := lint_revisions(migrations_dir):
+        return problems
     if [t for t in inspect(engine).get_table_names() if t != "alembic_version"]:
         return ["check_migrations needs an empty database"]
     upgrade(engine, migrations_dir, metadata)
@@ -109,9 +145,7 @@ def check_migrations(engine: Engine, migrations_dir, metadata: MetaData) -> list
     if left:
         problems.append(f"downgrade to base left tables: {left}")
         return problems                       # upgrading again would only fail on the leftovers
-    try: upgrade(engine, migrations_dir, metadata)
-    except Exception as e: problems.append(f"upgrade after downgrade failed: {type(e).__name__}: {str(e).splitlines()[0]}")
-    return problems
+    return problems + stairway(engine, migrations_dir, metadata)
 
 
 def revision(engine: Engine, migrations_dir, metadata: MetaData, message: str, autogenerate: bool = True):

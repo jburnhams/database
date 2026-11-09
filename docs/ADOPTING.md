@@ -54,7 +54,7 @@ migrations = "migrations"     # Alembic revisions, committed with the app
 ## 4. Migrations
 ```
 dbtool revision -m "initial"      # autogenerate from the models; review the file, commit it
-dbtool check                      # from empty to head, compare with the models, downgrade, again: SQLite AND Postgres
+dbtool check                      # one head; from empty to head, compare with the models, downgrade, stairway: SQLite AND Postgres
 dbtool migrate --live             # apply to the app's real database (or --url ...)
 dbtool current --live
 ```
@@ -62,6 +62,12 @@ dbtool current --live
 - **Review every generated file.** Autogenerate sees a **rename as drop + add** (data lost): edit it into `batch_op.alter_column(..., new_column_name=...)`. Data migrations (filling a new column from old ones) are written by hand into the revision (`op.execute(...)`).
 - On SQLite, migrations run with foreign-key enforcement switched off (batch mode recreates tables by copy, drop and rename, which would trip references from other tables) and `PRAGMA foreign_key_check` must be clean before the commit, otherwise the whole migration rolls back.
 - Changed a model and forgot the revision? `dbtool check` fails, and so does the app's `test_schema_matches_models` (below).
+- What `dbtool check` (and the standard `test_migrations`) checks, on an empty scratch database:
+  - **one head and one base**: two branches that each added a revision on the same parent leave two heads, and `upgrade head` would fail at app start. Fix by pointing the newer revision's `down_revision` at the other one.
+  - upgrade to head, then **no drift** from the models;
+  - **downgrade to base** leaves no tables;
+  - **stairway**: each revision in turn goes up, down one step and up again, which catches a downgrade that forgets an index, type or sequence (it only shows when that revision is re-applied).
+- Write revision ids the way `dbtool revision` does (random hex); hand-picked ids like `0001` collide when two branches pick the same one.
 
 **At app start** (only in the long-running service, never on every connect or in CLI subcommands, so a stray process cannot migrate the schema under the running service), instead of running `dbtool migrate` by hand:
 ```python
@@ -95,12 +101,14 @@ Installing `omarchy-db` registers a pytest plugin. Fixtures:
 def test_decide(db_session):
     db_session.add(Face(photo="a.jpg")); db_session.commit()
     ...
-
-def test_schema_matches_models(db_engine):            # copy this one into every app
-    from omarchy_db import drift
-    from myapp.models import Base
-    assert drift(db_engine, Base.metadata) == []
 ```
+**Standard tests, in every app.** One line, in any test module of the database tests (e.g. `tests/unit/test_database.py`):
+```python
+from omarchy_db.testing import test_migrations, test_schema_matches_models  # noqa: F401
+```
+pytest collects imported tests like local ones: `test_schema_matches_models` (the migrated test database matches the models) and `test_migrations` (what `dbtool check` does, on the backend the run uses). Don't write your own copies.
+
+**Never build the test schema with `Base.metadata.create_all()`**: the tests then pass while the migrations are broken or missing. Use the fixtures (they migrate), or `db_url` for code that makes its own engine.
 - `pytest`: SQLite. Migrations run **once** into a template; each test gets an in-memory copy (the example app: 7 tests in 0.1 s). Foreign keys are on.
 - `pytest --pg` (or `OMARCHY_DB_TEST=postgres`): each test gets `CREATE DATABASE ... TEMPLATE` from a migrated template on the real server, dropped afterwards (7 tests in about 3 s). Needs CREATEDB; the admin connection is `OMARCHY_DB_TEST_ADMIN_URL` (default: you over the socket).
 - App code that calls `connect("myapp")` itself: use `db_env`, or make it apply to every test in `conftest.py`:
@@ -109,7 +117,19 @@ def test_schema_matches_models(db_engine):            # copy this one into every
   def _test_db(db_env): ...
   ```
   Never write your own "unset the URL" or "block the network" guard: the library's guard (below) already refuses the real database, and a network block does not cover the local Unix socket.
-- Run both before merging; CI does (see `.github/workflows/python.yml` here for a service-container setup to copy).
+- Run both before merging. **CI: call the reusable workflow** instead of copying a Postgres service setup. It runs `dbtool check`, then the given tests on SQLite (portable apps) and on a throwaway Postgres 18 with pgvector (`--pg`):
+```yaml
+# .github/workflows/database.yml
+name: Database
+on: { push: { branches: [main] }, pull_request: }
+jobs:
+  database:
+    uses: jburnhams/database/.github/workflows/app-db.yml@main
+    with:
+      install: pip install -r requirements-test.txt   # the app's test deps; omarchy-db itself is installed by the workflow
+      tests: tests/unit/db                            # the tests that touch the database
+      # pythonpath: src   directory: .   python-version: "3.13"   pytest-args: "-o addopts="
+```
 
 ## Safety: real data is opt-in, tests never touch it
 Two rules, in both libraries (`omarchy_db.guard`, `@omarchy/db` `guard.ts`):
