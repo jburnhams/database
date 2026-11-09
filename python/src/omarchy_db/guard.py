@@ -75,7 +75,9 @@ def check_url(url: str, where: str = "connect"):
     from sqlalchemy.engine import make_url
     u = make_url(url)
     if u.get_backend_name() == "postgresql":
-        check_database(u.database or os.environ.get("PGDATABASE") or u.username or os.environ.get("USER"), where)
+        q = u.query.get("dbname")                      # psycopg's dialect lets ?dbname= override the path
+        dbname = (q[-1] if isinstance(q, tuple) else q) or u.database
+        check_database(dbname or os.environ.get("PGDATABASE") or u.username or os.environ.get("USER"), where)
 
 
 def enter_test_mode():

@@ -43,9 +43,9 @@ export function databaseOf(cfg: any): string | undefined {
   if (cfg?.database) return cfg.database;
   if (cfg?.connectionString) {
     const u = new URL(cfg.connectionString.replace(/^postgres(ql)?(\+\w+)?:/, "postgresql:"));
-    const db = decodeURIComponent(u.pathname.replace(/^\//, "")) || u.searchParams.get("dbname") || undefined;
+    const db = decodeURIComponent(u.pathname.replace(/^\//, ""));     // pg ignores ?dbname=
     if (db) return db;
-    if (u.username) return decodeURIComponent(u.username);
+    return e.PGDATABASE ?? (u.username ? decodeURIComponent(u.username) : undefined) ?? e.PGUSER ?? e.USER;
   }
   return e.PGDATABASE ?? cfg?.user ?? e.PGUSER ?? e.USER;
 }

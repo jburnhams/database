@@ -245,6 +245,10 @@ describe("guard: tests never reach a real database, and a real database is opt-i
       process.env.GUARD_APP_DATABASE_URL = "postgresql://u:p@db.example/prod";
       expect(() => postgresConfig("guard_app")).toThrow(/during tests/);
       await expect(connectPostgres("guard_app", {})).rejects.toThrow(/during tests/);
+      process.env.PGDATABASE = "omarchy";
+      process.env.GUARD_APP_DATABASE_URL = "postgresql://u@localhost/?dbname=omdb_test_x"; // pg ignores ?dbname=
+      expect(() => postgresConfig("guard_app")).toThrow(/during tests/);
+      delete process.env.PGDATABASE;
       process.env.GUARD_APP_DATABASE_URL = "postgresql://localhost/omdb_test_x";          // a throwaway one is fine
       expect(postgresConfig("guard_app")).toEqual({ connectionString: "postgresql://localhost/omdb_test_x" });
       await expect(dropDatabase("omarchy")).rejects.toThrow(/throwaway/);

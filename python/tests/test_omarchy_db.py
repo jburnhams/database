@@ -77,6 +77,8 @@ def test_guard_refuses_real_databases_in_tests(monkeypatch):
                     lambda: connect("postgresql://u:p@db.example/prod")):
         with pytest.raises(LiveDatabaseRefused, match="during tests"):
             attempt()
+    with pytest.raises(LiveDatabaseRefused):                                      # ?dbname= wins in psycopg
+        connect("postgresql:///omdb_x?dbname=omarchy")
     monkeypatch.setenv("BH_DATABASE_URL", "postgresql:///omdb_test_bh_1")        # a throwaway one is fine
     assert url_for("bh").startswith("postgresql+psycopg:///omdb_test_bh_1")
     with pytest.raises(ValueError, match="throwaway"):
