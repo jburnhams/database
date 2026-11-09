@@ -366,3 +366,14 @@ def test_stairway_catches_a_revision_that_cannot_be_reapplied(app, backend):
         eng.dispose()
     assert not any("left tables" in x for x in problems)
     assert any(x.startswith("stairway: upgrade again to cccc00000003") and "ix_things_name_extra" in x for x in problems), problems
+
+
+def test_check_loads_revisions_that_use_op_at_module_level(app):
+    """`op.f()` at module level is fine during a migration; loading the files for the checks must not break on it."""
+    from omarchy_db import lint_revisions
+    dbtool(app, "revision", "-m", "initial", "--sqlite")
+    rev = next((app / "migrations").glob("*.py"))
+    rev.write_text(rev.read_text() + "\nNAME = op.f('ix_module_level')\n")
+    assert lint_revisions(app / "migrations") == []
+    r = dbtool(app, "check", "--sqlite", check=False)
+    assert r.returncode == 0, r.stdout + r.stderr

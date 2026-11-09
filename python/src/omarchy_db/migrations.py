@@ -14,6 +14,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, inspect, text
 from sqlalchemy.engine import Connection, Engine
@@ -96,12 +97,21 @@ def drift(engine: Engine, metadata: MetaData) -> list:
         return compare_metadata(mc, metadata)
 
 
+def _revisions(migrations_dir) -> ScriptDirectory:
+    """The app's revisions, loaded. Inside a (database-less) Operations context, because a revision may call `op.f()`
+    or other `op` helpers at module level, which outside a migration raises "proxy object has not yet been established"."""
+    script = ScriptDirectory.from_config(make_config(migrations_dir, MetaData(), None))
+    with Operations.context(MigrationContext.configure(dialect_name="sqlite")):
+        script.get_revisions("heads")                 # loads every revision file now
+    return script
+
+
 def lint_revisions(migrations_dir) -> list[str]:
     """Checks on the revision files alone, no database: exactly one base and one head. Two branches that each added
     a revision on the same parent (two PRs written in parallel) leave two heads, and `upgrade head` then fails at app
     start; this catches it in the tests instead."""
     try:
-        script = ScriptDirectory.from_config(make_config(migrations_dir, MetaData(), None))
+        script = _revisions(migrations_dir)
         heads, bases = script.get_heads(), script.get_bases()
     except Exception as e:
         return [f"revision files do not form a chain: {type(e).__name__}: {str(e).splitlines()[0]}"]
@@ -118,7 +128,7 @@ def stairway(engine: Engine, migrations_dir, metadata: MetaData) -> list[str]:
     """From base, one revision at a time: upgrade to it, downgrade one step, upgrade again. Catches a downgrade that
     only works from head, or a revision that cannot be re-applied after its own downgrade (a leftover index, type or
     sequence). Ends at head. Returns problems (empty = all good); stops at the first broken step."""
-    script = ScriptDirectory.from_config(make_config(migrations_dir, metadata, None))
+    script = _revisions(migrations_dir)
     for rev in reversed(list(script.walk_revisions())):
         name = f"{rev.revision} ({(rev.doc or '').splitlines()[0] if rev.doc else 'no message'})"
         for step, fn, target in (("upgrade", upgrade, rev.revision), ("downgrade one step from", downgrade, "-1"),
