@@ -125,17 +125,23 @@ def lint_revisions(migrations_dir) -> list[str]:
 
 
 def stairway(engine: Engine, migrations_dir, metadata: MetaData) -> list[str]:
-    """From base, one revision at a time: upgrade to it, downgrade one step, upgrade again. Catches a downgrade that
-    only works from head, or a revision that cannot be re-applied after its own downgrade (a leftover index, type or
-    sequence). Ends at head. Returns problems (empty = all good); stops at the first broken step."""
+    """From base, one revision at a time (in dependency order): upgrade to it, downgrade one step, upgrade again.
+    Catches a downgrade that only works from head, or a revision that cannot be re-applied after its own downgrade (a
+    leftover index, type or sequence). Ends at head. Returns problems (empty = all good); stops at the first broken
+    step. Branches and merges: "one step down" from a revision with one parent is that parent (which also undoes a
+    sibling branch applied meanwhile; it is re-applied when the merge needs it), and from a merge revision, its
+    first parent (which removes just the merge: the other parents stay applied as heads)."""
     script = _revisions(migrations_dir)
     for rev in reversed(list(script.walk_revisions())):
         name = f"{rev.revision} ({(rev.doc or '').splitlines()[0] if rev.doc else 'no message'})"
-        for step, fn, target in (("upgrade", upgrade, rev.revision), ("downgrade one step from", downgrade, "-1"),
+        parents = rev.down_revision
+        down = "base" if not parents else parents if isinstance(parents, str) else parents[0]
+        for step, fn, target in (("upgrade", upgrade, rev.revision), ("downgrade one step from", downgrade, down),
                                  ("upgrade again to", upgrade, rev.revision)):
             try: fn(engine, migrations_dir, metadata, target)
             except Exception as e:
                 return [f"stairway: {step} {name} failed: {type(e).__name__}: {str(e).splitlines()[0]}"]
+    upgrade(engine, migrations_dir, metadata)        # every head (a sibling undone above may not be re-applied yet)
     return []
 
 
