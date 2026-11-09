@@ -4,6 +4,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { DATABASE } from "./config.js";
+import { isThrowaway } from "./guard.js";
 
 export function adminConfig(): any {
   const url = process.env.OMARCHY_DB_TEST_ADMIN_URL;
@@ -37,6 +38,7 @@ export async function createDatabase(name: string, template?: string) {
 }
 
 export async function dropDatabase(name: string) {
+  if (!isThrowaway(name)) throw new Error(`dropDatabase only drops throwaway databases (omdb_*), not "${name}"`);
   await admin((q) => q(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`));
 }
 

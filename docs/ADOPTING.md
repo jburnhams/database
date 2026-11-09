@@ -47,7 +47,7 @@ models = "myapp.models:Base"
 migrations = "migrations"     # Alembic revisions, committed with the app
 # engine = "postgres"         # only for Postgres-only apps
 ```
-**Which database:** `OMARCHY_DB_URL`, else `MYAPP_DATABASE_URL`, else `postgresql+psycopg:///omarchy?options=-csearch_path%3Dmyapp` (the shared database, `OMARCHY_DB_DATABASE` or `omarchy`, over the local socket with peer auth, no password; the search_path makes the models' unqualified table names resolve to the app's schema). Any of them may be a SQLite path (`data/app.db`); SQLite has no schemas, so nothing changes there. **Never one database per app**: Postgres cannot join across databases.
+**Which database:** (a real one only with `OMARCHY_DB_LIVE=1`, see [Safety](#safety-real-data-is-opt-in-tests-never-touch-it)) `OMARCHY_DB_URL`, else `MYAPP_DATABASE_URL`, else `postgresql+psycopg:///omarchy?options=-csearch_path%3Dmyapp` (the shared database, `OMARCHY_DB_DATABASE` or `omarchy`, over the local socket with peer auth, no password; the search_path makes the models' unqualified table names resolve to the app's schema). Any of them may be a SQLite path (`data/app.db`); SQLite has no schemas, so nothing changes there. **Never one database per app**: Postgres cannot join across databases.
 
 **Other apps' data:** read it with qualified names (`select ... from photos.albums`); a login that is a member of every app role (the one that ran `dbtool new-app`) can. Models stay unqualified (no `schema=` on tables), which keeps them portable to SQLite.
 
@@ -55,15 +55,15 @@ migrations = "migrations"     # Alembic revisions, committed with the app
 ```
 dbtool revision -m "initial"      # autogenerate from the models; review the file, commit it
 dbtool check                      # from empty to head, compare with the models, downgrade, again: SQLite AND Postgres
-dbtool migrate                    # apply to the app's database (or --url ...)
-dbtool current
+dbtool migrate --live             # apply to the app's real database (or --url ...)
+dbtool current --live
 ```
 - `revision` migrates a **scratch** database to head and compares it with the models (Alembic autogenerate), so it never touches real data, and it writes nothing when there is no change. It uses a scratch Postgres when the server is reachable: Alembic writes defaults in the scratch database's dialect, and Postgres's form (`false`) works on SQLite too, while SQLite's (`0`) breaks Postgres (found while building this). Revisions always use batch ops, so the same file runs on both engines.
 - **Review every generated file.** Autogenerate sees a **rename as drop + add** (data lost): edit it into `batch_op.alter_column(..., new_column_name=...)`. Data migrations (filling a new column from old ones) are written by hand into the revision (`op.execute(...)`).
 - On SQLite, migrations run with foreign-key enforcement switched off (batch mode recreates tables by copy, drop and rename, which would trip references from other tables) and `PRAGMA foreign_key_check` must be clean before the commit, otherwise the whole migration rolls back.
 - Changed a model and forgot the revision? `dbtool check` fails, and so does the app's `test_schema_matches_models` (below).
 
-**At app start**, instead of running `dbtool migrate` by hand:
+**At app start** (only in the long-running service, never on every connect or in CLI subcommands, so a stray process cannot migrate the schema under the running service), instead of running `dbtool migrate` by hand:
 ```python
 from omarchy_db import Project, connect
 engine = connect("myapp")
@@ -74,7 +74,7 @@ On Postgres it holds an advisory lock (two processes starting together do not bo
 ## 5. Schema on the shared server (once)
 ```
 dbtool new-app myapp       # role myapp (NOLOGIN, you are a member), schema myapp in the shared database owned by it, no USAGE for PUBLIC
-dbtool migrate
+dbtool migrate --live
 ```
 Other app roles cannot see the schema (no USAGE); you (a member of every app role) can read and join all of them.
 Your login needs CREATEDB and CREATEROLE (not superuser). Roles it creates are granted back to it with SET and INHERIT if the server sets `createrole_self_grant = 'set, inherit'`, which migrations as the app role and the test fixtures rely on. Back up per schema (`pg_dump --schema=myapp`) so each app restores on its own.
@@ -87,6 +87,7 @@ Installing `omarchy-db` registers a pytest plugin. Fixtures:
 | `db_session` | a SQLAlchemy `Session` on a fresh, migrated database, per test |
 | `db_engine` | the `Engine` behind it |
 | `db_url` | a URL to a fresh migrated database, for code that builds its own engine (`connect(db_url)`) |
+| `db_env` | points the app's **own** `connect("myapp")` at a fresh migrated test database (sets `OMARCHY_DB_URL` and `MYAPP_DATABASE_URL`), for app code that connects by itself (a CLI, a store) |
 | `db_backend` | `"sqlite"` or `"postgres"` |
 | `db_project` | the app's `Project` |
 
@@ -102,13 +103,27 @@ def test_schema_matches_models(db_engine):            # copy this one into every
 ```
 - `pytest`: SQLite. Migrations run **once** into a template; each test gets an in-memory copy (the example app: 7 tests in 0.1 s). Foreign keys are on.
 - `pytest --pg` (or `OMARCHY_DB_TEST=postgres`): each test gets `CREATE DATABASE ... TEMPLATE` from a migrated template on the real server, dropped afterwards (7 tests in about 3 s). Needs CREATEDB; the admin connection is `OMARCHY_DB_TEST_ADMIN_URL` (default: you over the socket).
+- App code that calls `connect("myapp")` itself: use `db_env`, or make it apply to every test in `conftest.py`:
+  ```python
+  @pytest.fixture(autouse=True)
+  def _test_db(db_env): ...
+  ```
+  Never write your own "unset the URL" or "block the network" guard: the library's guard (below) already refuses the real database, and a network block does not cover the local Unix socket.
 - Run both before merging; CI does (see `.github/workflows/python.yml` here for a service-container setup to copy).
+
+## Safety: real data is opt-in, tests never touch it
+Two rules, in both libraries (`omarchy_db.guard`, `@omarchy/db` `guard.ts`):
+
+1. **Tests never open a real database.** Under a test run (pytest with `omarchy-db` installed; vitest, jest, `NODE_ENV=test`; or `OMARCHY_DB_TESTING=1`, which the pytest plugin sets so subprocesses inherit it) the only Postgres databases that can be opened are throwaway ones, named `omdb_*` (what the fixtures, `freshDb`, `scratch_database()` and `check` create), plus the admin database they are created through (`OMARCHY_DB_TEST_ADMIN_URL`, never the shared database). Anything else raises `LiveDatabaseRefused`, **even with `OMARCHY_DB_LIVE=1` or a URL in the environment**. It is enforced on every connection in the process, not only `connect()`: the pytest plugin wraps `psycopg.connect` / `psycopg2.connect` before `conftest.py` and the app are imported; importing `@omarchy/db` or `@omarchy/db/testing` under a test runner wraps `pg.Client.prototype.connect` (add `"@omarchy/db/guard"` to vitest `setupFiles` if your tests import neither). PGlite, SQLite and D1 are always fine. Test-only drops (`drop_pg`, `dropDatabase`) refuse anything that is not `omdb_*`.
+2. **A real database is opt-in.** Outside tests, `connect(app)`, `url_for(app)`, `connect(url)` and `postgresConfig(app)` / `connectPostgres(app)` refuse a Postgres database that is not `omdb_*` unless the process has **`OMARCHY_DB_LIVE=1`**. Set it where the app is deployed (its systemd unit: `Environment=OMARCHY_DB_LIVE=1`, or its launcher), **not** in your shell profile, so scripts, REPLs and agents started from a shell do not get the real database by default. `dbtool migrate|current` and `omarchy-db migrate` take `--live`. SQLite paths are not restricted.
+
+Upgrading an app to a library version with these rules: add `OMARCHY_DB_LIVE=1` to its service first, then upgrade (`uv lock --upgrade-package omarchy-db` / `npm update @omarchy/db`), then drop any home-made test guards.
 
 ## Moving an existing SQLite app
 1. Write the models to match the existing tables (or what they should become), `dbtool revision -m initial`, `dbtool check`.
 2. `dbtool new-app`, `dbtool migrate`. (An app with a Postgres database of its own: copy it into its schema, e.g. a scratch copy with `public` renamed to the app's schema, `pg_dump --schema` of it restored in one transaction, then compare every table.)
 3. Copy the data in one transaction and verify it before committing (row counts and a hash of every row per table; roll back on any mismatch).
-4. Point the app at it (`MYAPP_DATABASE_URL` or the default), keep the SQLite file read-only for 30 days.
+4. Point the app at it (`MYAPP_DATABASE_URL` or the default, with `OMARCHY_DB_LIVE=1` in its service), keep the SQLite file read-only for 30 days.
 
 # TypeScript apps (`@omarchy/db`, Drizzle)
 
@@ -140,9 +155,9 @@ export const faces = app.table("faces", { id: integer().primaryKey().generatedBy
 npx omarchy-db generate -m "add faces"    # the next NNNN_name.sql (+ meta/ snapshot) if the schema changed; review, commit
 npx omarchy-db check                      # schema vs migrations, and migrations from empty on every engine of the dialect
 npx omarchy-db new-app                    # postgresql: role + schema in the shared database (as dbtool new-app)
-npx omarchy-db migrate                    # postgresql: apply pending migrations, as the app role, in its schema
+npx omarchy-db migrate --live             # postgresql: apply pending migrations, as the app role, in its schema
 ```
-At start: `const { db } = await connectPostgres("myapp", schema, { migrate: "migrations" })`. D1 in production: `wrangler d1 migrations apply <db> --remote` with `migrations_dir = "migrations"` (same files); in a Worker, `import { connectD1 } from "@omarchy/db/d1"`.
+At start (the service has `OMARCHY_DB_LIVE=1`): `const { db } = await connectPostgres("myapp", schema, { migrate: "migrations" })`. D1 in production: `wrangler d1 migrations apply <db> --remote` with `migrations_dir = "migrations"` (same files); in a Worker, `import { connectD1 } from "@omarchy/db/d1"`.
 - As with Alembic, **a rename shows as drop + add**: edit the generated SQL.
 - Postgres migrations commit **one file at a time** (an enum value added in one file can be used in the next), under a session advisory lock so two processes never migrate at once.
 - Export enums (`pgEnum` / `app.enum`) from the schema file like tables; they are part of the schema.
@@ -157,4 +172,4 @@ beforeEach(async () => { t = await freshDb(schema); });
 afterEach(() => t.close());
 afterAll(dropTemplates);
 ```
-Run `npx vitest run` (default engine) and with `OMARCHY_DB_TEST_ENGINE=postgres` or `=d1`; CI does all four (`.github/workflows/typescript.yml`). Give vitest `testTimeout: 60_000` for the server runs.
+Importing `@omarchy/db/testing` switches on the guard: any `pg` connection to a non-`omdb_*` database fails the test. Run `npx vitest run` (default engine) and with `OMARCHY_DB_TEST_ENGINE=postgres` or `=d1`; CI does all four (`.github/workflows/typescript.yml`). Give vitest `testTimeout: 60_000` for the server runs.

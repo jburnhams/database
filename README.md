@@ -7,7 +7,11 @@ Tooling for running many small apps against **one shared PostgreSQL database, wi
 
 How an app adopts it: [docs/ADOPTING.md](docs/ADOPTING.md).
 
-**Conventions.** The shared database is `omarchy` unless `OMARCHY_DB_DATABASE` says otherwise; an app's schema and role are its name. By default apps connect over the local Unix socket with peer authentication; `OMARCHY_DB_URL` or `<APP>_DATABASE_URL` point elsewhere. The login that runs `dbtool new-app` needs CREATEDB and CREATEROLE, and the server should set `createrole_self_grant = 'set, inherit'` so that login can act as the app roles it creates.
+**Conventions.** The shared database is `omarchy` unless `OMARCHY_DB_DATABASE` says otherwise; an app's schema and role are its name. Apps connect over the local Unix socket with peer authentication; `OMARCHY_DB_URL` or `<APP>_DATABASE_URL` point elsewhere.
+
+**Safety.** A real database is opt-in, and tests can never reach one (see [docs/ADOPTING.md](docs/ADOPTING.md#safety-real-data-is-opt-in-tests-never-touch-it)):
+- `connect(app)` / `connectPostgres(app)` open a real Postgres database only when the process has `OMARCHY_DB_LIVE=1` (set it in the app's service unit), or with `dbtool migrate --live` / `omarchy-db migrate --live`. There is no default database otherwise.
+- Under pytest or vitest, every Postgres connection in the process (including an app's own `create_engine`, `psycopg.connect`, `new pg.Pool`) is refused unless it is a throwaway `omdb_*` test database, whatever the environment says. The login that runs `dbtool new-app` needs CREATEDB and CREATEROLE, and the server should set `createrole_self_grant = 'set, inherit'` so that login can act as the app roles it creates.
 
 **Tests:** `pytest python` and the examples (`pytest`, `pytest --pg`, `dbtool check`); `npm test` in `ts/` and the TS examples with `OMARCHY_DB_TEST_ENGINE=pglite|postgres|sqlite|d1`. CI runs all of them against a PostgreSQL 18 service container.
 

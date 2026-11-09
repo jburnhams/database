@@ -7,10 +7,12 @@
                               No sudo (your role has CREATEDB CREATEROLE). --database for another database (tests)
   dbtool revision -m MSG      autogenerate a migration: a scratch database is migrated to head and compared with
                               the models; nothing is written if there is no change. --empty for a hand-written one
-  dbtool migrate [--url URL]  upgrade the app's schema (default URL: config.url_for(app)) to head (or --to REV)
+  dbtool migrate --live [--url URL]
+                              upgrade the app's schema (default URL: config.url_for(app)) to head (or --to REV).
+                              --live (or OMARCHY_DB_LIVE=1) says you mean a real database; refused under tests
   dbtool check                on a scratch database: migrate from empty, compare with the models, downgrade to
                               base, migrate again. Exit 1 on any problem (models changed without a revision, ...)
-  dbtool current [--url URL]  revision the database is at
+  dbtool current --live [--url URL]  revision the database is at
 Scratch databases: `revision` uses Postgres when a server is reachable (OMARCHY_DB_TEST_ADMIN_URL), because
 Alembic renders defaults in the scratch database's dialect and Postgres's form (e.g. `false`) also works on SQLite,
 while SQLite's (`0`) breaks Postgres; --sqlite forces SQLite. `check` runs on SQLite and, when reachable, Postgres
@@ -24,7 +26,8 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 
 from . import migrations as m
-from .config import DATABASE, normalise_url, url_for
+from .config import DATABASE, normalise_url, resolve_url
+from .guard import LiveDatabaseRefused, allow_live
 from .engine import connect
 from .project import Project
 from .scratch import admin_url, pg_available, scratch_database
@@ -67,7 +70,7 @@ def cmd_new_app(a):
             c.execute(text(f'REVOKE ALL ON SCHEMA "{schema}" FROM PUBLIC'))
             print(f"created schema {a.database}.{schema} (owner {name}, no PUBLIC access)")
     eng.dispose()
-    print(f"{name}: schema {schema} in {a.database}; URL {url_for(name, schema) if a.database == DATABASE else '(--database given)'}"
+    print(f"{name}: schema {schema} in {a.database}; URL {resolve_url(name, schema) if a.database == DATABASE else '(--database given)'}"
           "  (dbtool migrate creates the tables)")
 
 
@@ -87,6 +90,7 @@ def cmd_revision(a):
 
 
 def cmd_migrate(a):
+    if a.live: allow_live()
     p = Project.load()
     eng = connect(normalise_url(a.url) if a.url else p.url())
     schema = p.schema if eng.dialect.name == "postgresql" else None
@@ -113,6 +117,7 @@ def cmd_check(a):
 
 
 def cmd_current(a):
+    if a.live: allow_live()
     p = Project.load()
     print(m.current(connect(normalise_url(a.url) if a.url else p.url()), p.schema) or "empty")
 
@@ -126,12 +131,14 @@ def main(argv=None):
     s.add_argument("--database", default=DATABASE); s.set_defaults(f=cmd_new_app)
     s = sub.add_parser("revision"); s.add_argument("-m", "--message", required=True); s.add_argument("--empty", action="store_true")
     s.add_argument("--pg", action="store_true"); s.add_argument("--sqlite", action="store_true"); s.set_defaults(f=cmd_revision)
-    s = sub.add_parser("migrate"); s.add_argument("--url"); s.add_argument("--to", default="head"); s.set_defaults(f=cmd_migrate)
+    live = "you mean a real database (as OMARCHY_DB_LIVE=1); refused under tests"
+    s = sub.add_parser("migrate"); s.add_argument("--url"); s.add_argument("--live", action="store_true", help=live); s.add_argument("--to", default="head"); s.set_defaults(f=cmd_migrate)
     s = sub.add_parser("check"); s.add_argument("--pg", action="store_true", help="Postgres only")
     s.add_argument("--sqlite", action="store_true", help="SQLite only"); s.set_defaults(f=cmd_check)
-    s = sub.add_parser("current"); s.add_argument("--url"); s.set_defaults(f=cmd_current)
+    s = sub.add_parser("current"); s.add_argument("--url"); s.add_argument("--live", action="store_true", help=live); s.set_defaults(f=cmd_current)
     a = ap.parse_args(argv)
-    a.f(a)
+    try: a.f(a)
+    except LiveDatabaseRefused as e: sys.exit(f"dbtool: {e}")
 
 
 if __name__ == "__main__":

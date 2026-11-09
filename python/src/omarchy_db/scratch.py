@@ -46,6 +46,9 @@ def create_pg(name: str, template: str | None = None) -> str:
 
 
 def drop_pg(name: str):
+    from .guard import is_throwaway
+    if not is_throwaway(name):
+        raise ValueError(f"drop_pg only drops throwaway databases (omdb_*), not {name!r}")
     eng = _admin()
     with eng.connect() as c:
         c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))

@@ -4,7 +4,8 @@
  *
  *   omarchy-db generate -m "add pinned"   write the next migration if the schema changed (review it, commit it)
  *   omarchy-db check                      drift guard: schema vs migrations, migrations from empty on every engine
- *   omarchy-db migrate [--url URL]        postgresql apps: apply pending migrations to the app's database
+ *   omarchy-db migrate --live [--url URL] postgresql apps: apply pending migrations to the app's database
+ *                                         (--live, or OMARCHY_DB_LIVE=1: you mean the real database; refused under tests)
  *   omarchy-db new-app [NAME]             postgresql apps: role + database on the shared server (no sudo)
  *
  * D1 apps apply migrations in production with `wrangler d1 migrations apply <db> --remote`
@@ -15,6 +16,7 @@ import { generate } from "./generate.js";
 import { check } from "./check.js";
 import { migratePostgres } from "./migrate.js";
 import { newApp } from "./scratch.js";
+import { allowLive, checkConfig } from "./guard.js";
 import { relative } from "node:path";
 
 function arg(name: string): string | undefined {
@@ -45,14 +47,15 @@ async function main() {
   } else if (cmd === "migrate") {
     if (p.dialect !== "postgresql") throw new Error("sqlite/D1 apps: wrangler d1 migrations apply <db> --remote");
     const pg = (await import("pg")).default;
+    if (process.argv.includes("--live")) allowLive();
     const url = arg("--url");
-    const pool = new pg.Pool(url ? { connectionString: url } : postgresConfig(p.app));
+    const pool = new pg.Pool(url ? checkConfig({ connectionString: url }, "migrate --url") : postgresConfig(p.app));
     try {
       const { applied } = await migratePostgres(pool, p.migrationsDir, { schema: p.app, ownerRole: p.app });
       console.log(applied.length ? `applied: ${applied.join(", ")}` : "up to date");
     } finally { await pool.end(); }
   } else {
-    console.log("usage: omarchy-db generate -m MSG | check | migrate [--url URL] | new-app [NAME]");
+    console.log("usage: omarchy-db generate -m MSG | check | migrate --live [--url URL] | new-app [NAME]");
     process.exit(cmd ? 1 : 0);
   }
 }

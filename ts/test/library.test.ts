@@ -233,3 +233,44 @@ describe("Postgres enums", () => {
     } finally { await dropDatabase(name); }
   });
 });
+
+describe("guard: tests never reach a real database, and a real database is opt-in", () => {
+  it("refuses the shared database under a test runner, even with OMARCHY_DB_LIVE=1", async () => {
+    const { postgresConfig, connectPostgres, LiveDatabaseRefused } = await import("../dist/index.js");
+    const saved = { ...process.env };
+    try {
+      delete process.env.OMARCHY_DB_URL; delete process.env.GUARD_APP_DATABASE_URL;
+      process.env.OMARCHY_DB_LIVE = "1";
+      expect(() => postgresConfig("guard_app")).toThrow(LiveDatabaseRefused);
+      process.env.GUARD_APP_DATABASE_URL = "postgresql://u:p@db.example/prod";
+      expect(() => postgresConfig("guard_app")).toThrow(/during tests/);
+      await expect(connectPostgres("guard_app", {})).rejects.toThrow(/during tests/);
+      process.env.GUARD_APP_DATABASE_URL = "postgresql://localhost/omdb_test_x";          // a throwaway one is fine
+      expect(postgresConfig("guard_app")).toEqual({ connectionString: "postgresql://localhost/omdb_test_x" });
+      await expect(dropDatabase("omarchy")).rejects.toThrow(/throwaway/);
+    } finally { process.env = saved; }
+  });
+
+  it.skipIf(!PG)("refuses raw pg.Client / pg.Pool connections to a real database", async () => {
+    const pg = (await import("pg")).default;
+    const name = uniqueName("realdb").replace(/^/, "x");                                  // not omdb_*
+    const admin = new pg.Client(adminConfig()); await admin.connect();
+    await admin.query(`CREATE DATABASE "${name}"`);
+    try {
+      await expect(new pg.Client(withDatabase(adminConfig(), name)).connect()).rejects.toThrow(/during tests/);
+      const pool = new pg.Pool(withDatabase(adminConfig(), name));
+      await expect(pool.query("SELECT 1")).rejects.toThrow(/during tests/);
+      await pool.end();
+    } finally { await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`); await admin.end(); }
+  });
+
+  it("outside tests, the default database needs OMARCHY_DB_LIVE=1", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
+      !["VITEST", "VITEST_MODE", "VITEST_POOL_ID", "VITEST_WORKER_ID", "NODE_ENV", "OMARCHY_DB_TESTING", "OMARCHY_DB_URL", "OMARCHY_DB_LIVE", "JEST_WORKER_ID"].includes(k)));
+    const code = `import("${join(ROOT, "dist/index.js")}").then(m => console.log(JSON.stringify(m.postgresConfig("guard_app")))).catch(e => { console.log(e.name); })`;
+    expect(execFileSync(process.execPath, ["-e", code], { env, encoding: "utf8" }).trim()).toBe("LiveDatabaseRefused");
+    expect(JSON.parse(execFileSync(process.execPath, ["-e", code], { env: { ...env, OMARCHY_DB_LIVE: "1" }, encoding: "utf8" })))
+      .toEqual({ host: "/run/postgresql", database: "omarchy" });
+  });
+});
