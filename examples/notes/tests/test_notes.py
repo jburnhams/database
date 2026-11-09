@@ -45,6 +45,23 @@ def test_own_engine_from_url(db_url):
     eng.dispose()
 
 
+def test_app_code_that_connects_by_itself(db_env):
+    """db_env points the app's own connect("notes") at this test's database (as an app's CLI or store would)."""
+    eng = connect("notes")
+    with session(eng) as s:
+        s.add(Note(text="via app")); s.commit()
+        assert s.scalars(select(Note.text)).all() == ["via app"]
+    eng.dispose()
+
+
+def test_without_db_env_the_shared_database_is_refused(monkeypatch):
+    from omarchy_db import LiveDatabaseRefused
+    monkeypatch.delenv("OMARCHY_DB_URL", raising=False)
+    monkeypatch.delenv("NOTES_DATABASE_URL", raising=False)
+    with pytest.raises(LiveDatabaseRefused):
+        connect("notes")
+
+
 def test_schema_matches_models(db_engine):
     assert drift(db_engine, Base.metadata) == []
 

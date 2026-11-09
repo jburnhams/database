@@ -18,6 +18,10 @@
     "./d1": {
       "types": "./dist/d1.d.ts",
       "default": "./dist/d1.js"
+    },
+    "./guard": {
+      "types": "./dist/guard.d.ts",
+      "default": "./dist/guard.js"
     }
   },
   "bin": {

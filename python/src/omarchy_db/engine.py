@@ -8,12 +8,15 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from .config import normalise_url, url_for
+from .guard import check_url
 
 
 def connect(app_or_url: str, **kw) -> Engine:
     """Engine for an app name ("notes": see config.url_for) or a URL / SQLite path.
-    SQLite gets foreign keys on, WAL and a busy timeout, so it behaves like the server in tests."""
+    SQLite gets foreign keys on, WAL and a busy timeout, so it behaves like the server in tests.
+    A real Postgres database needs OMARCHY_DB_LIVE=1 and is never allowed during tests (omarchy_db.guard)."""
     url = url_for(app_or_url) if re.fullmatch(r"[a-z][a-z0-9_-]*", app_or_url) else normalise_url(app_or_url)
+    check_url(url, f"connect({app_or_url!r})" if "://" not in app_or_url else "connect(url)")
     engine = create_engine(url, **kw)
     if engine.dialect.name == "sqlite":
         _sqlite_pragmas(engine)

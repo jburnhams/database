@@ -10,9 +10,11 @@ import uuid
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
-from omarchy_db import Project, connect, normalise_url, url_for
+import psycopg
+
+from omarchy_db import LiveDatabaseRefused, Project, connect, normalise_url, resolve_url, url_for
 from omarchy_db.migrations import check_migrations, current, drift, upgrade
-from omarchy_db.scratch import admin_url, pg_available, scratch_database
+from omarchy_db.scratch import admin_url, drop_pg, pg_available, pg_url, scratch_database
 
 PG = pg_available()
 needs_pg = pytest.mark.skipif(not PG, reason="no Postgres server reachable")
@@ -53,17 +55,77 @@ def app(tmp_path, monkeypatch):
 def test_url_config(monkeypatch):
     monkeypatch.delenv("OMARCHY_DB_URL", raising=False)
     monkeypatch.delenv("BH_DATABASE_URL", raising=False)
-    assert url_for("bh") == "postgresql+psycopg:///omarchy?options=-csearch_path%3Dbh"      # one database, a schema per app
-    assert url_for("bh", "faces") == "postgresql+psycopg:///omarchy?options=-csearch_path%3Dfaces"
+    assert resolve_url("bh") == "postgresql+psycopg:///omarchy?options=-csearch_path%3Dbh"      # one database, a schema per app
+    assert resolve_url("bh", "faces") == "postgresql+psycopg:///omarchy?options=-csearch_path%3Dfaces"
     monkeypatch.setenv("BH_DATABASE_URL", "postgresql:///other")
-    assert url_for("bh") == "postgresql+psycopg:///other?options=-csearch_path%3Dbh"   # same schema as migrations use
+    assert resolve_url("bh") == "postgresql+psycopg:///other?options=-csearch_path%3Dbh"   # same schema as migrations use
     monkeypatch.setenv("BH_DATABASE_URL", "postgresql://u@h/db?sslmode=disable")
-    assert url_for("bh") == "postgresql+psycopg://u@h/db?sslmode=disable&options=-csearch_path%3Dbh"
+    assert resolve_url("bh") == "postgresql+psycopg://u@h/db?sslmode=disable&options=-csearch_path%3Dbh"
     monkeypatch.setenv("BH_DATABASE_URL", "postgresql:///db?options=-csearch_path%3Dx")
-    assert url_for("bh") == "postgresql+psycopg:///db?options=-csearch_path%3Dx"          # an explicit choice is kept
+    assert resolve_url("bh") == "postgresql+psycopg:///db?options=-csearch_path%3Dx"          # an explicit choice is kept
     monkeypatch.setenv("OMARCHY_DB_URL", "data/x.db")
     assert url_for("bh") == "sqlite:///" + os.path.abspath("data/x.db")
     assert normalise_url("sqlite:///:memory:") == "sqlite:///:memory:"
+
+
+def test_guard_refuses_real_databases_in_tests(monkeypatch):
+    """Under pytest the shared database is refused, even with OMARCHY_DB_LIVE=1 and whichever way it is named."""
+    monkeypatch.delenv("OMARCHY_DB_URL", raising=False)
+    monkeypatch.delenv("BH_DATABASE_URL", raising=False)
+    monkeypatch.setenv("OMARCHY_DB_LIVE", "1")
+    for attempt in (lambda: url_for("bh"), lambda: connect("bh"), lambda: connect("postgresql:///omarchy"),
+                    lambda: connect("postgresql://u:p@db.example/prod")):
+        with pytest.raises(LiveDatabaseRefused, match="during tests"):
+            attempt()
+    with pytest.raises(LiveDatabaseRefused):                                      # ?dbname= wins in psycopg
+        connect("postgresql:///omdb_x?dbname=omarchy")
+    monkeypatch.setenv("BH_DATABASE_URL", "postgresql:///omdb_test_bh_1")        # a throwaway one is fine
+    assert url_for("bh").startswith("postgresql+psycopg:///omdb_test_bh_1")
+    with pytest.raises(ValueError, match="throwaway"):
+        drop_pg("omarchy")
+
+
+@needs_pg
+def test_guard_covers_raw_drivers():
+    """create_engine() and psycopg.connect() straight to a real database are refused too (the strata-models
+    incident went through the app's own engine code, not a fixture)."""
+    name = f"realdb_{uuid.uuid4().hex[:8]}"
+    adm = create_engine(admin_url(), isolation_level="AUTOCOMMIT")
+    with adm.connect() as c: c.execute(text(f'CREATE DATABASE "{name}"'))
+    try:
+        url = pg_url(name)
+        with pytest.raises(LiveDatabaseRefused):
+            create_engine(url).connect()
+        with pytest.raises(LiveDatabaseRefused):
+            psycopg.connect(url.replace("postgresql+psycopg", "postgresql"))
+        r = subprocess.run([sys.executable, "-c", f"from sqlalchemy import create_engine; create_engine({url!r}).connect()"],
+                           capture_output=True, text=True)                        # not guarded: no plugin loaded...
+        assert r.returncode == 0, r.stderr                                         # ...but connect() is (below)
+        r = subprocess.run([sys.executable, "-c", f"import omarchy_db; omarchy_db.connect({url!r}).connect()"],
+                           capture_output=True, text=True)
+        assert "LiveDatabaseRefused" in r.stderr and "during tests" in r.stderr    # OMARCHY_DB_TESTING inherited
+    finally:
+        with adm.connect() as c: c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        adm.dispose()
+
+
+def test_live_database_is_opt_in(tmp_path):
+    """Outside tests there is no default database: the shared one needs OMARCHY_DB_LIVE=1 (or dbtool --live)."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("OMARCHY_DB_TESTING", "PYTEST_CURRENT_TEST", "OMARCHY_DB_URL", "BH_DATABASE_URL", "OMARCHY_DB_LIVE")}
+    code = "from omarchy_db import url_for; print(url_for('bh'))"
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode and "OMARCHY_DB_LIVE=1" in r.stderr
+    r = subprocess.run([sys.executable, "-c", code], env={**env, "OMARCHY_DB_LIVE": "1"}, capture_output=True, text=True)
+    assert r.stdout.strip() == "postgresql+psycopg:///omarchy?options=-csearch_path%3Dbh"
+    r = subprocess.run([sys.executable, "-c", code], env={**env, "BH_DATABASE_URL": "data/bh.db"}, capture_output=True,
+                       text=True, cwd=tmp_path)
+    assert r.returncode == 0                                                         # SQLite is not restricted
+
+
+def test_dbtool_migrate_refuses_the_shared_database_in_tests(app):
+    r = dbtool(app, "migrate", "--live", check=False)
+    assert r.returncode and "during tests" in r.stderr
 
 
 def test_connect_sqlite_pragmas(tmp_path):

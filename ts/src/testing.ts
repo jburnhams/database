@@ -14,7 +14,11 @@
  *                    "postgres" (the real server: CREATE DATABASE ... TEMPLATE of a migrated template, dropped after)
  *   sqlite apps:     "sqlite" (default: better-sqlite3 in memory; migrated once, then a copy via serialize()) or
  *                    "d1" (Miniflare's D1 simulator, migrated per test: slower, closest to production)
+ *
+ * Importing this module under a test runner switches on the guard (guard.ts): every pg connection in the process
+ * to anything but a throwaway omdb_* database throws LiveDatabaseRefused, so a test can never reach real data.
  */
+import "./guard.js";
 import { loadProject, type Project } from "./config.js";
 import { migrateD1, migratePglite, migratePostgres, migrateSqlite } from "./migrate.js";
 import { createDatabase, dropDatabase, uniqueName } from "./scratch.js";

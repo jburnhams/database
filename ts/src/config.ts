@@ -12,11 +12,13 @@
  * can query each other's data. postgresql apps declare their tables in their schema:
  *   export const app = pgSchema("notes");  export const notes = app.table("notes", { ... });
  * Which server: OMARCHY_DB_URL, else <APP>_DATABASE_URL, else the shared database over the Unix socket
- * (/run/postgresql, peer auth as your OS user).
+ * (/run/postgresql, peer auth as your OS user). A real database is opt-in (see guard.ts): postgresConfig() refuses
+ * it unless the process has OMARCHY_DB_LIVE=1, and always under a test runner.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkConfig } from "./guard.js";
 
 export type Dialect = "postgresql" | "sqlite";
 
@@ -75,8 +77,14 @@ export function envName(app: string): string {
   return app.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_DATABASE_URL";
 }
 
-/** Connection settings for an app's Postgres database: a URL from the environment, or the local socket. */
+/** Connection settings for an app's Postgres database, checked by the guard: throws LiveDatabaseRefused for a real
+ *  database unless OMARCHY_DB_LIVE=1, and always under tests. */
 export function postgresConfig(app: string): { connectionString: string } | { host: string; database: string } {
+  return checkConfig(resolvePostgresConfig(app), `postgresConfig("${app}")`);
+}
+
+/** Where an app's Postgres database is, unchecked: a URL from the environment, or the local socket. */
+export function resolvePostgresConfig(app: string): { connectionString: string } | { host: string; database: string } {
   for (const v of ["OMARCHY_DB_URL", envName(app)]) {
     const url = process.env[v];
     if (url) return { connectionString: url };

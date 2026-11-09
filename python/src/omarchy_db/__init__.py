@@ -17,11 +17,12 @@ Migrations: `dbtool revision -m "..."` (autogenerate), `dbtool migrate`, `dbtool
 `Project.load().upgrade(engine)` at app start. Tests: the pytest plugin's `db_session` / `db_engine` fixtures.
 See docs/ADOPTING.md in the database repo.
 """
-from .config import url_for, normalise_url
+from .config import url_for, normalise_url, resolve_url
+from .guard import LiveDatabaseRefused
 from .engine import connect, session
 from .models import Base, NAMING_CONVENTION, make_base
 from .project import Project
 from .migrations import upgrade, downgrade, drift, check_migrations
 
-__all__ = ["Base", "NAMING_CONVENTION", "Project", "check_migrations", "connect", "downgrade", "drift",
-           "make_base", "normalise_url", "session", "upgrade", "url_for"]
+__all__ = ["Base", "LiveDatabaseRefused", "NAMING_CONVENTION", "Project", "check_migrations", "connect", "downgrade", "drift",
+           "make_base", "normalise_url", "resolve_url", "session", "upgrade", "url_for"]
