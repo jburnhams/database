@@ -73,9 +73,9 @@ jobs:
           activate-environment: true
       - name: Install
         run: |
-          uv pip install pip
+          uv pip install pip -e ".omarchy-db/python[test]"     # first, so an app depending on omarchy-db>=x installs
           ${{ inputs.install }}
-          uv pip install -e ".omarchy-db/python[test]"
+          uv pip install --reinstall-package omarchy-db -e ".omarchy-db/python[test]"   # the ref under test, even if the app's requirements pulled another
       - name: Migrations (dbtool check)
         run: PYTHONPATH="$PWD/${{ inputs.pythonpath }}" dbtool check
       - name: Database tests on SQLite
