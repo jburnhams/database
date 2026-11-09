@@ -4,7 +4,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from omarchy_db import check_migrations, connect, drift, session
+from omarchy_db import connect, session
+from omarchy_db.testing import test_migrations, test_schema_matches_models  # noqa: F401  (the standard checks)
 from notes.models import Author, Base, Note
 
 
@@ -61,16 +62,3 @@ def test_without_db_env_the_shared_database_is_refused(monkeypatch):
     with pytest.raises(LiveDatabaseRefused):
         connect("notes")
 
-
-def test_schema_matches_models(db_engine):
-    assert drift(db_engine, Base.metadata) == []
-
-
-def test_migrations_from_empty_and_back(db_backend, db_project, tmp_path):
-    """Upgrade an empty database to head, compare with the models, downgrade to base, upgrade again."""
-    from omarchy_db.scratch import scratch_database
-    from sqlalchemy import create_engine
-    with scratch_database(db_backend == "postgres") as url:
-        eng = connect(url) if url.startswith("sqlite") else create_engine(url)
-        assert check_migrations(eng, db_project.migrations_dir, Base.metadata) == []
-        eng.dispose()

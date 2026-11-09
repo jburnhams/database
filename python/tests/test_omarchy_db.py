@@ -328,3 +328,77 @@ def test_env_url_without_search_path_uses_the_migrated_schema(app, monkeypatch):
             c.execute(text("INSERT INTO things (name) VALUES ('x')"))     # unqualified, as app code is
             assert c.execute(text("SELECT current_schema()")).scalar() == p.schema
         eng.dispose()
+
+
+def test_lint_revisions_catches_two_heads(app):
+    """Two revisions written in parallel on the same parent: `upgrade head` would fail at app start."""
+    from omarchy_db import lint_revisions
+    dbtool(app, "revision", "-m", "initial", "--sqlite")
+    assert lint_revisions(app / "migrations") == []
+    first = next((app / "migrations").glob("*.py"))
+    parent = first.read_text().split("revision: str = '")[1].split("'")[0]
+    for rid in ("aaaa00000001", "bbbb00000002"):
+        (app / "migrations" / f"x_{rid}.py").write_text(
+            f"revision = '{rid}'\ndown_revision = '{parent}'\nbranch_labels = None\ndepends_on = None\n"
+            "def upgrade(): pass\ndef downgrade(): pass\n")
+    problems = lint_revisions(app / "migrations")
+    assert len(problems) == 1 and "2 heads" in problems[0] and "aaaa00000001" in problems[0]
+    r = dbtool(app, "check", "--sqlite", check=False)
+    assert r.returncode == 1 and "2 heads" in r.stdout
+
+
+@pytest.mark.parametrize("backend", ["sqlite", pytest.param("postgres", marks=needs_pg)])
+def test_stairway_catches_a_revision_that_cannot_be_reapplied(app, backend):
+    """The second revision's downgrade forgets its index. Downgrading to base still leaves an empty database (the
+    first revision drops the table and the index with it), but re-applying the second revision after its own
+    downgrade fails: only the stairway sees that."""
+    dbtool(app, "revision", "-m", "initial", "--sqlite")
+    parent = next((app / "migrations").glob("*.py")).read_text().split("revision: str = '")[1].split("'")[0]
+    (app / "migrations" / "x_cccc00000003.py").write_text(
+        f"from alembic import op\nrevision = 'cccc00000003'\ndown_revision = '{parent}'\nbranch_labels = None\n"
+        "depends_on = None\n"
+        "def upgrade(): op.create_index('ix_things_name_extra', 'things', ['name'])\n"
+        "def downgrade(): pass\n")
+    p = Project.load(app)
+    with scratch_database(backend == "postgres") as url:
+        eng = connect(url) if url.startswith("sqlite") else create_engine(url)
+        problems = check_migrations(eng, p.migrations_dir, p.metadata)
+        eng.dispose()
+    assert not any("left tables" in x for x in problems)
+    assert any(x.startswith("stairway: upgrade again to cccc00000003") and "ix_things_name_extra" in x for x in problems), problems
+
+
+def test_check_loads_revisions_that_use_op_at_module_level(app):
+    """`op.f()` at module level is fine during a migration; loading the files for the checks must not break on it."""
+    from omarchy_db import lint_revisions
+    dbtool(app, "revision", "-m", "initial", "--sqlite")
+    rev = next((app / "migrations").glob("*.py"))
+    rev.write_text(rev.read_text() + "\nNAME = op.f('ix_module_level')\n")
+    assert lint_revisions(app / "migrations") == []
+    r = dbtool(app, "check", "--sqlite", check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("backend", ["sqlite", pytest.param("postgres", marks=needs_pg)])
+def test_stairway_handles_branches_and_a_merge(app, backend):
+    """Two sibling revisions on the same parent, joined by a merge revision: a valid history, one head."""
+    dbtool(app, "revision", "-m", "initial", "--sqlite")
+    parent = next((app / "migrations").glob("*.py")).read_text().split("revision: str = '")[1].split("'")[0]
+    for rid, table in (("dddd00000001", "left_t"), ("eeee00000002", "right_t")):
+        (app / "migrations" / f"x_{rid}.py").write_text(
+            f"from alembic import op\nimport sqlalchemy as sa\nrevision = '{rid}'\ndown_revision = '{parent}'\n"
+            "branch_labels = None\ndepends_on = None\n"
+            f"def upgrade(): op.create_table('{table}', sa.Column('id', sa.Integer, primary_key=True))\n"
+            f"def downgrade(): op.drop_table('{table}')\n")
+    (app / "migrations" / "x_ffff00000003.py").write_text(
+        "revision = 'ffff00000003'\ndown_revision = ('dddd00000001', 'eeee00000002')\nbranch_labels = None\n"
+        "depends_on = None\ndef upgrade(): pass\ndef downgrade(): pass\n")
+    from omarchy_db import lint_revisions
+    assert lint_revisions(app / "migrations") == []
+    p = Project.load(app)
+    with scratch_database(backend == "postgres") as url:
+        eng = connect(url) if url.startswith("sqlite") else create_engine(url)
+        problems = check_migrations(eng, p.migrations_dir, p.metadata)
+        assert set(inspect(eng).get_table_names()) >= {"left_t", "right_t", "things"}        # ends at head
+        eng.dispose()
+    assert not [x for x in problems if x.startswith("stairway") or "left tables" in x], problems

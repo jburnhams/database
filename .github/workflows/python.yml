@@ -41,3 +41,13 @@ jobs:
       - name: Example migrations match the models, on both engines
         working-directory: examples/notes
         run: $GITHUB_WORKSPACE/.venv/bin/dbtool check
+
+  # The reusable workflow apps call (app-db.yml), run on the example app with this commit of the library.
+  example-app-workflow:
+    uses: ./.github/workflows/app-db.yml
+    with:
+      directory: examples/notes
+      install: uv pip install -e .
+      tests: tests
+      pythonpath: "."
+      library-ref: ${{ github.sha }}

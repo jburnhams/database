@@ -22,7 +22,7 @@ from .guard import LiveDatabaseRefused
 from .engine import connect, session
 from .models import Base, NAMING_CONVENTION, make_base
 from .project import Project
-from .migrations import upgrade, downgrade, drift, check_migrations
+from .migrations import upgrade, downgrade, drift, check_migrations, lint_revisions, stairway
 
 __all__ = ["Base", "LiveDatabaseRefused", "NAMING_CONVENTION", "Project", "check_migrations", "connect", "downgrade", "drift",
-           "make_base", "normalise_url", "resolve_url", "session", "upgrade", "url_for"]
+           "lint_revisions", "make_base", "normalise_url", "resolve_url", "session", "stairway", "upgrade", "url_for"]
