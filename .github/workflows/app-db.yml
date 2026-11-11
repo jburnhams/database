@@ -67,7 +67,7 @@ jobs:
           repository: jburnhams/database
           ref: ${{ inputs.library-ref }}
           path: ${{ inputs.directory }}/.omarchy-db
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ inputs.python-version }}
           activate-environment: true
