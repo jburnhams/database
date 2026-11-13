@@ -270,7 +270,7 @@ def test_batch_migration_of_a_referenced_table_with_data(app, backend):
     with scratch_database(backend == "postgres") as url:
         dbtool(app, "migrate", "--url", url)
         if not url.startswith("sqlite"):                       # dbtool migrate put the tables in the app's schema
-            url += "?options=-csearch_path%3D" + Project.load(app).schema
+            url += ("&" if "?" in url else "?") + "options=-csearch_path%3D" + Project.load(app).schema
         eng = connect(url) if url.startswith("sqlite") else create_engine(url)
         with eng.begin() as c:
             c.exec_driver_sql("INSERT INTO authors (id, name) VALUES (1, 'Ada')")
@@ -402,3 +402,32 @@ def test_stairway_handles_branches_and_a_merge(app, backend):
         assert set(inspect(eng).get_table_names()) >= {"left_t", "right_t", "things"}        # ends at head
         eng.dispose()
     assert not [x for x in problems if x.startswith("stairway") or "left tables" in x], problems
+
+
+@needs_pg
+def test_scratch_refuses_a_server_holding_the_shared_database():
+    """Test and scratch databases never go on the real server: one that holds the shared database is refused."""
+    from omarchy_db.scratch import RealServerRefused, _refuse_real_server
+    adm = create_engine(admin_url(), isolation_level="AUTOCOMMIT")
+    with adm.connect() as c: c.execute(text('CREATE DATABASE "omarchy"'))
+    try:
+        with pytest.raises(RealServerRefused):
+            _refuse_real_server(admin_url())
+    finally:
+        with adm.connect() as c: c.execute(text('DROP DATABASE IF EXISTS "omarchy" WITH (FORCE)'))
+        adm.dispose()
+
+
+def test_private_server_when_no_admin_url():
+    """Without OMARCHY_DB_TEST_ADMIN_URL a process gets its own server in a temp dir, deleted when it exits."""
+    from omarchy_db import testserver
+    if not testserver.available():
+        pytest.skip("no PostgreSQL server binaries")
+    env = {k: v for k, v in os.environ.items() if k != "OMARCHY_DB_TEST_ADMIN_URL"}
+    code = ("import os; from omarchy_db.scratch import admin_url, scratch_database; u = admin_url(); "
+            "d = u.split('host=')[1].replace('%2F', '/'); print(d); assert os.path.isdir(d)\n"
+            "with scratch_database(True) as s: assert 'omdb_scratch' in s and d.replace('/', '%2F') in s")
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    d = r.stdout.strip()
+    assert os.path.basename(d).startswith(testserver.PREFIX) and not os.path.exists(d)

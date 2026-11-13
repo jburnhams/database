@@ -12,7 +12,8 @@ Default backend: SQLite. The migrations run ONCE per session into a template; ea
 db_engine, a file for db_url), so a test costs a copy, not a migration.
 `pytest --pg` (or OMARCHY_DB_TEST=postgres, or engine = "postgres" in the project) uses a real Postgres instead:
 a template database is migrated once and each test gets `CREATE DATABASE ... TEMPLATE` (a file copy on the server,
-milliseconds), dropped afterwards. Admin connection: OMARCHY_DB_TEST_ADMIN_URL (see omarchy_db.scratch).
+milliseconds), dropped afterwards. That server is a throwaway one, never the real server: OMARCHY_DB_TEST_ADMIN_URL
+if set (CI), otherwise a private server started for the run (omarchy_db.testserver).
 
 Loading this plugin switches on the test guard (omarchy_db.guard) before conftest.py or any app module is imported:
 for the whole run, every Postgres connection in the process (connect(), create_engine(), psycopg.connect()) and in

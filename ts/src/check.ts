@@ -4,7 +4,7 @@
  *  2. on every engine of the app's dialect, the migrations run from an empty database, and the result matches the
  *     schema (drizzle-kit's push diff against the migrated database is empty), which catches hand edits that broke
  *     a migration or a snapshot that does not match its SQL.
- * postgresql apps: PGlite, plus the real server when reachable. sqlite apps: SQLite, plus D1 (Miniflare) when installed.
+ * postgresql apps: PGlite, plus a throwaway PostgreSQL server (testserver.ts) when one can be had. sqlite apps: SQLite, plus D1 (Miniflare) when installed.
  */
 import { loadSchema, schemaExports, type Project } from "./config.js";
 import { diff } from "./generate.js";

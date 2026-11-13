@@ -157,6 +157,23 @@ export const authors = sqliteTable("authors", { id: integer().primaryKey(), name
 export const notes = sqliteTable("notes", { id: integer().primaryKey(), authorId: integer("author_id").references(() => authors.id, { onDelete: "cascade" }) });
 `;
 
+describe.runIf(PG)("the real server is refused for test databases", () => {
+  it("newApp under tests refuses a server that holds the shared database, before creating anything", async () => {
+    const pg = (await import("pg")).default;
+    const { execFileSync } = await import("node:child_process");
+    const admin = new pg.Client(adminConfig()); await admin.connect();
+    const db = uniqueName("omdb_shared_refused");
+    await admin.query(`CREATE DATABASE "omarchy"`);
+    try {
+      const code = `import("${join(ROOT, "dist/index.js")}").then(m => m.newApp("refused_app", "${db}")).then(() => console.log("created"), e => console.log(e.name))`;
+      const env = { ...process.env, OMARCHY_DB_TEST_ADMIN_URL: adminConfig().connectionString };
+      expect(execFileSync(process.execPath, ["-e", code], { env, encoding: "utf8" }).trim()).toBe("RealServerRefused");
+      expect((await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [db])).rowCount).toBe(0);
+      expect((await admin.query(`SELECT 1 FROM pg_roles WHERE rolname = 'refused_app'`)).rowCount).toBe(0);
+    } finally { await admin.query(`DROP DATABASE IF EXISTS "omarchy" WITH (FORCE)`); await admin.end(); }
+  });
+});
+
 describe("D1 refuses a rebuild that would cascade into child rows", () => {
   it("refuses before running anything; the child rows and the migration record are unchanged", async () => {
     const dir = project("cascade_d1", "sqlite", CASCADE_V1);

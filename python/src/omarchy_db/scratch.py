@@ -1,8 +1,9 @@
 """Throwaway databases for tests and autogenerate.
 
-Postgres: created and dropped through an admin connection, OMARCHY_DB_TEST_ADMIN_URL (default
-postgresql+psycopg:///postgres, i.e. you over the socket; needs CREATEDB). In CI point it at the service container,
-e.g. postgresql://postgres:postgres@localhost:5432/postgres.  (CI service container, not a secret) gitleaks:allow
+Postgres: created and dropped through an admin connection on a throwaway server, never the real one.
+OMARCHY_DB_TEST_ADMIN_URL names it (in CI the service container, see .github/workflows); unset, a private server is
+started for the process (omarchy_db.testserver). A server that holds the shared database (`omarchy`) is refused:
+that is the real one.
 """
 import os
 import sqlite3
@@ -15,8 +16,45 @@ from sqlalchemy import create_engine, text
 from .config import normalise_url
 
 
+class RealServerRefused(RuntimeError):
+    """The test admin URL points at the real server (it holds the shared database)."""
+
+
+_checked: set[str] = set()
+
+
 def admin_url() -> str:
-    return normalise_url(os.environ.get("OMARCHY_DB_TEST_ADMIN_URL", "postgresql+psycopg:///postgres"))
+    """Admin URL of the throwaway server for test and scratch databases (starts the private one if needed)."""
+    from . import testserver
+    url = normalise_url(os.environ.get("OMARCHY_DB_TEST_ADMIN_URL") or testserver.url())
+    if url not in _checked:
+        _refuse_real_server(url)
+        _checked.add(url)
+    return url
+
+
+def _refuse_real_server(url: str):
+    from .config import DATABASE
+    eng = create_engine(url, pool_size=1)
+    try:
+        with eng.connect() as c:
+            real = c.execute(text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": DATABASE}).scalar()
+    finally:
+        eng.dispose()
+    if real:
+        raise RealServerRefused(
+            f"OMARCHY_DB_TEST_ADMIN_URL points at a server that holds the shared database {DATABASE!r}: test and "
+            "scratch databases never go on the real server. Unset it (a private throwaway server is started) or "
+            "point it at a throwaway one.")
+
+
+def live_admin_url() -> str:
+    """Admin URL for dbtool new-app on the real server: OMARCHY_DB_ADMIN_URL, else you over the local socket.
+    Under tests it is the throwaway server instead."""
+    from .guard import testing
+    if testing():
+        return admin_url()
+    return normalise_url(os.environ.get("OMARCHY_DB_ADMIN_URL", "postgresql+psycopg:///postgres"))
 
 
 def _admin():
@@ -24,10 +62,16 @@ def _admin():
 
 
 def pg_available() -> bool:
+    """A throwaway Postgres can be had: OMARCHY_DB_TEST_ADMIN_URL reachable, or server binaries for a private one."""
+    from . import testserver
+    if not os.environ.get("OMARCHY_DB_TEST_ADMIN_URL") and not testserver.available():
+        return False
     try:
         eng = create_engine(admin_url(), pool_size=1)
         with eng.connect() as c: c.execute(text("SELECT 1"))
         eng.dispose(); return True
+    except RealServerRefused:
+        raise
     except Exception:
         return False
 
