@@ -47,9 +47,11 @@ def is_throwaway(dbname: str | None) -> bool:
 
 def _admin_database() -> str | None:
     from sqlalchemy.engine import make_url
-    from .config import DATABASE
-    from .scratch import admin_url
-    name = make_url(admin_url()).database or None
+    from .config import DATABASE, normalise_url
+    url = os.environ.get("OMARCHY_DB_TEST_ADMIN_URL")       # set by CI, or by testserver once it has started
+    if not url:
+        return None
+    name = make_url(normalise_url(url)).database or None
     return None if name == DATABASE else name          # the shared database is never an admin database
 
 

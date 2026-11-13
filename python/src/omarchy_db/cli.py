@@ -13,7 +13,8 @@
   dbtool check                on a scratch database: migrate from empty, compare with the models, downgrade to
                               base, migrate again. Exit 1 on any problem (models changed without a revision, ...)
   dbtool current --live [--url URL]  revision the database is at
-Scratch databases: `revision` uses Postgres when a server is reachable (OMARCHY_DB_TEST_ADMIN_URL), because
+Scratch databases go on a throwaway Postgres (OMARCHY_DB_TEST_ADMIN_URL, else a private server, omarchy_db.testserver),
+never the real one. `revision` uses Postgres when one can be had, because
 Alembic renders defaults in the scratch database's dialect and Postgres's form (e.g. `false`) also works on SQLite,
 while SQLite's (`0`) breaks Postgres; --sqlite forces SQLite. `check` runs on SQLite and, when reachable, Postgres
 (engine = "postgres" projects: Postgres only).
@@ -30,7 +31,7 @@ from .config import DATABASE, normalise_url, resolve_url
 from .guard import LiveDatabaseRefused, allow_live
 from .engine import connect
 from .project import Project
-from .scratch import admin_url, pg_available, scratch_database
+from .scratch import live_admin_url, pg_available, scratch_database
 
 
 def _scratch_engine(url):
@@ -56,7 +57,7 @@ def cmd_new_app(a):
     schema = a.schema or (p.schema if p and not a.name else name)
     if not name or not re.fullmatch(r"[a-z][a-z0-9_]*", name) or not re.fullmatch(r"[a-z][a-z0-9_]*", schema):
         sys.exit("app and schema names: lower case letters, digits and _ (they are role and schema names)")
-    adm = create_engine(admin_url(), isolation_level="AUTOCOMMIT")
+    adm = create_engine(live_admin_url(), isolation_level="AUTOCOMMIT")
     with adm.connect() as c:
         if not c.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :n"), {"n": name}).scalar():
             c.execute(text(f'CREATE ROLE "{name}" NOLOGIN')); print(f"created role {name}")

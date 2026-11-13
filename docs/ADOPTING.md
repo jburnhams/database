@@ -110,7 +110,7 @@ pytest collects imported tests like local ones: `test_schema_matches_models` (th
 
 **Never build the test schema with `Base.metadata.create_all()`**: the tests then pass while the migrations are broken or missing. Use the fixtures (they migrate), or `db_url` for code that makes its own engine.
 - `pytest`: SQLite. Migrations run **once** into a template; each test gets an in-memory copy (the example app: 7 tests in 0.1 s). Foreign keys are on.
-- `pytest --pg` (or `OMARCHY_DB_TEST=postgres`): each test gets `CREATE DATABASE ... TEMPLATE` from a migrated template on the real server, dropped afterwards (7 tests in about 3 s). Needs CREATEDB; the admin connection is `OMARCHY_DB_TEST_ADMIN_URL` (default: you over the socket).
+- `pytest --pg` (or `OMARCHY_DB_TEST=postgres`): each test gets `CREATE DATABASE ... TEMPLATE` from a migrated template, dropped afterwards (7 tests in about 3 s). This happens on a **throwaway server, never the real one**: `OMARCHY_DB_TEST_ADMIN_URL` if set (CI: the service container), otherwise a private server the process starts for itself (`initdb` into a temp dir, socket only, about a second; stopped and deleted at exit, or by a watchdog if the run is killed). Needs the PostgreSQL server binaries installed. An admin URL whose server holds the shared database `omarchy` is refused (`RealServerRefused`).
 - App code that calls `connect("myapp")` itself: use `db_env`, or make it apply to every test in `conftest.py`:
   ```python
   @pytest.fixture(autouse=True)
@@ -150,7 +150,7 @@ Upgrading an app to a library version with these rules: add `OMARCHY_DB_LIVE=1` 
 Library: [ts/](../ts). Examples: [examples/ts-notes](../examples/ts-notes) (an app on the shared Postgres) and [examples/ts-worker](../examples/ts-worker) (a Cloudflare Worker on D1). Same ideas as the Python side: the schema is written in code, migrations are generated from it, reviewed and committed, a check fails on drift, and each test gets a fresh migrated database.
 
 **One dialect per app.** Drizzle's table types are per dialect, so an app picks one:
-- **`postgresql`** (apps on the shared server): tables in the app's schema of the shared database via `pgSchema("<app>")`. Tests run on **PGlite** (real Postgres in-process: same SQL, no server, migrated once then cloned per test) or on the real server (`OMARCHY_DB_TEST_ENGINE=postgres`).
+- **`postgresql`** (apps on the shared server): tables in the app's schema of the shared database via `pgSchema("<app>")`. Tests run on **PGlite** (real Postgres in-process: same SQL, no server, migrated once then cloned per test) or on a real PostgreSQL (`OMARCHY_DB_TEST_ENGINE=postgres`: a private throwaway server, as above, never the shared one).
 - **`sqlite`** (Workers on D1): `sqliteTable`. Tests run on **SQLite** (better-sqlite3 in memory, migrated once then copied per test) or on **D1** through Miniflare (`OMARCHY_DB_TEST_ENGINE=d1`).
 
 (Unlike Python, Postgres apps are not tested on SQLite: PGlite gives the speed without a second dialect to keep in step.)

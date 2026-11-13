@@ -51,8 +51,9 @@ export function databaseOf(cfg: any): string | undefined {
 }
 
 function adminDatabase(): string | undefined {
-  const url = env().OMARCHY_DB_TEST_ADMIN_URL;
-  const name = url ? databaseOf({ connectionString: url }) : "postgres";
+  const url = env().OMARCHY_DB_TEST_ADMIN_URL;            // set by CI, or by testserver.ts once it has started
+  if (!url) return undefined;
+  const name = databaseOf({ connectionString: url });
   return name === (env().OMARCHY_DB_DATABASE ?? "omarchy") ? undefined : name;           // the shared database is never an admin database
 }
 

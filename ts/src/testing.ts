@@ -11,7 +11,8 @@
  *
  * Engine: OMARCHY_DB_TEST_ENGINE, else the dialect's default.
  *   postgresql apps: "pglite" (default: in-process Postgres; migrated once, then pg.clone() per test) or
- *                    "postgres" (the real server: CREATE DATABASE ... TEMPLATE of a migrated template, dropped after)
+ *                    "postgres" (a throwaway server, never the real one: OMARCHY_DB_TEST_ADMIN_URL, else a private server
+ *                    started for the process (testserver.ts); CREATE DATABASE ... TEMPLATE per test, dropped after)
  *   sqlite apps:     "sqlite" (default: better-sqlite3 in memory; migrated once, then a copy via serialize()) or
  *                    "d1" (Miniflare's D1 simulator, migrated per test: slower, closest to production)
  *
