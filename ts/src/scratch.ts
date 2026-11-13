@@ -78,6 +78,7 @@ export async function dropDatabase(name: string) {
 export async function newApp(name: string, database = DATABASE): Promise<string[]> {
   if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error("app names: lower case letters, digits and _");
   const done: string[] = [];
+  if (testing()) await admin(async () => undefined);       // under tests: refuse a real server first (RealServerRefused)
   const live = liveAdminConfig();
   const pg = (await import("pg")).default;
   const a = new pg.Client(live); await a.connect();
