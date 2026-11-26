@@ -62,15 +62,15 @@
     }
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261108.1",
-    "@electric-sql/pglite": "^0.5.15",
+    "@cloudflare/workers-types": "^5.20261123.1",
+    "@electric-sql/pglite": "^0.6.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26",
     "@types/pg": "^8.11.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.2.0",
     "miniflare": "^4.20260730.0",
     "pg": "^8.23.1",
     "typescript": "~7.0.2",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   }
 }
