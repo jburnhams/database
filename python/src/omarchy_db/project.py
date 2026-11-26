@@ -7,6 +7,17 @@
     migrations = "migrations"           # folder of Alembic revisions, relative to pyproject.toml
     engine = "portable"                 # or "postgres": uses Postgres-only features; tests and autogenerate then
                                         # need Postgres (dbtool and the pytest plugin follow this)
+
+A repo that owns several schemas (one per platform, say) keeps the first app as above and adds the others as
+sub-tables, each with its own models and migrations folder (same keys; `schema` defaults to the name):
+
+    [tool.omarchy-db.apps.whatsapp]
+    models = "pkg.whatsapp.models:Base"
+    migrations = "migrations_whatsapp"
+
+`Project.load(start, app="whatsapp")` picks one; without `app` it is the primary (or $OMARCHY_DB_APP), and a repo
+with several apps and no primary refuses to guess. dbtool takes `-p APP`, the pytest fixtures the `db_app` fixture
+or the `@pytest.mark.db_app("whatsapp")` marker.
 """
 import importlib
 import os
@@ -30,18 +41,38 @@ class Project:
     def __post_init__(self):
         self.schema = self.schema or self.app
 
+    @staticmethod
+    def _entries(cfg: dict) -> dict[str, dict]:
+        """name -> settings of every app a [tool.omarchy-db] table declares: the primary one, then `apps.<name>`."""
+        out = {cfg["app"]: cfg} if "app" in cfg else {}
+        for name, sub in cfg.get("apps", {}).items():
+            if name in out:
+                raise ValueError(f"[tool.omarchy-db] declares app {name!r} twice")
+            out[name] = {"app": name, **sub}
+        return out
+
     @classmethod
-    def load(cls, start: str | os.PathLike | None = None) -> "Project":
-        """Find the nearest pyproject.toml with [tool.omarchy-db], from start (default: cwd) upwards."""
+    def load(cls, start: str | os.PathLike | None = None, app: str | None = None) -> "Project":
+        """Find the nearest pyproject.toml with [tool.omarchy-db], from start (default: cwd) upwards. `app` (default
+        $OMARCHY_DB_APP, else the primary app) says which of several apps declared there."""
+        app = app or os.environ.get("OMARCHY_DB_APP") or None
         p = Path(start or os.getcwd()).resolve()
         for d in [p, *p.parents] if p.is_dir() else [p.parent, *p.parent.parents]:
             f = d / "pyproject.toml"
             if f.is_file():
                 cfg = tomllib.loads(f.read_text()).get("tool", {}).get("omarchy-db")
                 if cfg:
-                    return cls(root=d, app=cfg["app"], models=cfg["models"],
-                               migrations_dir=(d / cfg.get("migrations", "migrations")).resolve(),
-                               engine=cfg.get("engine", "portable"), schema=cfg.get("schema", cfg["app"]))
+                    entries = cls._entries(cfg)
+                    if app is None:
+                        if "app" not in cfg and len(entries) != 1:
+                            raise ValueError(f"{f} declares several apps ({', '.join(entries)}): say which (-p / app=)")
+                        app = next(iter(entries))
+                    if app not in entries:
+                        raise ValueError(f"{f} has no app {app!r} (has: {', '.join(entries)})")
+                    e = entries[app]
+                    return cls(root=d, app=app, models=e["models"],
+                               migrations_dir=(d / e.get("migrations", "migrations")).resolve(),
+                               engine=e.get("engine", "portable"), schema=e.get("schema", app))
         raise FileNotFoundError(f"no pyproject.toml with [tool.omarchy-db] in {p} or above (dbtool init writes one)")
 
     @property

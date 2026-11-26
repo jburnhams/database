@@ -1,7 +1,8 @@
 """dbtool: the app-facing command line (run from anywhere inside the app's repo).
 
   dbtool init --app NAME --models pkg.models:Base [--engine portable|postgres]
-                              add [tool.omarchy-db] to pyproject.toml and create migrations/
+                              add [tool.omarchy-db] to pyproject.toml and create migrations/ (when one exists, add the
+                              app as [tool.omarchy-db.apps.NAME] with migrations_NAME/)
   dbtool new-app [NAME]       on the shared server: owner role NAME (NOLOGIN, you are a member) and schema NAME in
                               the shared database, owned by it, no USAGE for PUBLIC (other app roles cannot see it).
                               No sudo (your role has CREATEDB CREATEROLE). --database for another database (tests)
@@ -13,6 +14,7 @@
   dbtool check                on a scratch database: migrate from empty, compare with the models, downgrade to
                               base, migrate again. Exit 1 on any problem (models changed without a revision, ...)
   dbtool current --live [--url URL]  revision the database is at
+  -p APP (before the command)  pick one of several apps a pyproject declares as [tool.omarchy-db.apps.APP]
 Scratch databases go on a throwaway Postgres (OMARCHY_DB_TEST_ADMIN_URL, else a private server, omarchy_db.testserver),
 never the real one. `revision` uses Postgres when one can be had, because
 Alembic renders defaults in the scratch database's dialect and Postgres's form (e.g. `false`) also works on SQLite,
@@ -22,6 +24,7 @@ while SQLite's (`0`) breaks Postgres; --sqlite forces SQLite. `check` runs on SQ
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -41,8 +44,17 @@ def _scratch_engine(url):
 def cmd_init(a):
     pp = Path.cwd() / "pyproject.toml"
     body = pp.read_text() if pp.exists() else f'[project]\nname = "{a.app}"\nversion = "0.1.0"\n'
-    if "[tool.omarchy-db]" in body:
-        sys.exit(f"{pp} already has [tool.omarchy-db]")
+    cfg = tomllib.loads(body).get("tool", {}).get("omarchy-db")
+    if cfg is not None:   # a further app of the same repo: its own sub-table and migrations folder
+        if a.app in Project._entries(cfg):
+            sys.exit(f"{pp} already has app {a.app}")
+        mig = f"migrations_{a.app}"
+        body = body.rstrip("\n") + f'\n\n[tool.omarchy-db.apps.{a.app}]\nmodels = "{a.models}"\nmigrations = "{mig}"\n' \
+               + (f'engine = "{a.engine}"\n' if a.engine != "portable" else "")
+        pp.write_text(body)
+        (Path.cwd() / mig).mkdir(exist_ok=True)
+        print(f"added app {a.app} to {pp}; {mig}/ ready. Next: dbtool -p {a.app} revision -m 'initial'")
+        return
     body = body.rstrip("\n") + f'\n\n[tool.omarchy-db]\napp = "{a.app}"\nmodels = "{a.models}"\nmigrations = "migrations"\n' \
            + (f'engine = "{a.engine}"\n' if a.engine != "portable" else "")
     pp.write_text(body)
@@ -51,7 +63,7 @@ def cmd_init(a):
 
 
 def cmd_new_app(a):
-    try: p = Project.load()
+    try: p = Project.load(app=a.project)
     except FileNotFoundError: p = None
     name = a.name or (p.app if p else None)
     schema = a.schema or (p.schema if p and not a.name else name)
@@ -76,7 +88,7 @@ def cmd_new_app(a):
 
 
 def cmd_revision(a):
-    p = Project.load()
+    p = Project.load(app=a.project)
     pg = p.postgres_only or a.pg or (not a.sqlite and pg_available())
     print(f"autogenerating against a scratch {'Postgres' if pg else 'SQLite'} database")
     with scratch_database(pg) as url:
@@ -92,7 +104,7 @@ def cmd_revision(a):
 
 def cmd_migrate(a):
     if a.live: allow_live()
-    p = Project.load()
+    p = Project.load(app=a.project)
     eng = connect(normalise_url(a.url) if a.url else p.url())
     schema = p.schema if eng.dialect.name == "postgresql" else None
     before = m.current(eng, schema)
@@ -101,7 +113,7 @@ def cmd_migrate(a):
 
 
 def cmd_check(a):
-    p = Project.load()
+    p = Project.load(app=a.project)
     engines = ["postgres"] if p.postgres_only or a.pg else ["sqlite"] + (["postgres"] if not a.sqlite and pg_available() else [])
     failed = False
     for e in engines:
@@ -119,12 +131,14 @@ def cmd_check(a):
 
 def cmd_current(a):
     if a.live: allow_live()
-    p = Project.load()
+    p = Project.load(app=a.project)
     print(m.current(connect(normalise_url(a.url) if a.url else p.url()), p.schema) or "empty")
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="dbtool", description=__doc__.split("\n")[0])
+    ap.add_argument("-p", "--project", metavar="APP", help="which app of a pyproject that declares several "
+                    "([tool.omarchy-db.apps.NAME]); default the primary one (or $OMARCHY_DB_APP)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("init"); s.add_argument("--app", required=True); s.add_argument("--models", required=True)
     s.add_argument("--engine", choices=["portable", "postgres"], default="portable"); s.set_defaults(f=cmd_init)

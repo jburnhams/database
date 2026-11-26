@@ -47,6 +47,14 @@ models = "myapp.models:Base"
 migrations = "migrations"     # Alembic revisions, committed with the app
 # engine = "postgres"         # only for Postgres-only apps
 ```
+**Several schemas in one repo** (one per platform, say): keep the first app as above and declare each further one as a sub-table with its own models and migrations folder; `dbtool init --app NAME --models ...` writes it for you when `[tool.omarchy-db]` already exists.
+```toml
+[tool.omarchy-db.apps.whatsapp]
+models = "myapp.whatsapp.models:Base"
+migrations = "migrations_whatsapp"     # schema defaults to the name
+```
+Pick the app with `dbtool -p whatsapp revision|check|migrate ...`, `Project.load(__file__, "whatsapp")` in code (default: the primary app, or `$OMARCHY_DB_APP`), and in tests with `@pytest.mark.db_app("whatsapp")` on the test or `pytestmark = pytest.mark.db_app("whatsapp")` on the module (the standard tests and all fixtures follow it). Each app still gets its own role and schema (`dbtool -p whatsapp new-app`).
+
 **Which database:** (a real one only with `OMARCHY_DB_LIVE=1`, see [Safety](#safety-real-data-is-opt-in-tests-never-touch-it)) `OMARCHY_DB_URL`, else `MYAPP_DATABASE_URL`, else `postgresql+psycopg:///omarchy?options=-csearch_path%3Dmyapp` (the shared database, `OMARCHY_DB_DATABASE` or `omarchy`, over the local socket with peer auth, no password; the search_path makes the models' unqualified table names resolve to the app's schema). Any of them may be a SQLite path (`data/app.db`); SQLite has no schemas, so nothing changes there. **Never one database per app**: Postgres cannot join across databases.
 
 **Other apps' data:** read it with qualified names (`select ... from photos.albums`); a login that is a member of every app role (the one that ran `dbtool new-app`) can. Models stay unqualified (no `schema=` on tables), which keeps them portable to SQLite.
@@ -96,6 +104,7 @@ Installing `omarchy-db` registers a pytest plugin. Fixtures:
 | `db_env` | points the app's **own** `connect("myapp")` at a fresh migrated test database (sets `OMARCHY_DB_URL` and `MYAPP_DATABASE_URL`), for app code that connects by itself (a CLI, a store) |
 | `db_backend` | `"sqlite"` or `"postgres"` |
 | `db_project` | the app's `Project` |
+| `db_app` | which app of a multi-app pyproject the test uses (the `db_app` marker; default: the primary) |
 
 ```python
 def test_decide(db_session):
