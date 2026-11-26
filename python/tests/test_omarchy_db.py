@@ -140,7 +140,7 @@ def test_init_writes_config(app):
     p = Project.load(app)
     assert p.app.startswith("t") and p.migrations_dir == app / "migrations" and p.engine == "portable"
     assert "things" in p.metadata.tables
-    assert dbtool(app, "init", "--app", "x", "--models", "m:B", check=False).returncode != 0   # not twice
+    assert dbtool(app, "init", "--app", p.app, "--models", "m:B", check=False).returncode != 0   # not twice
 
 
 @pytest.mark.parametrize("backend", ["sqlite", pytest.param("postgres", marks=needs_pg)])
@@ -431,3 +431,87 @@ def test_private_server_when_no_admin_url():
     assert r.returncode == 0, r.stderr
     d = r.stdout.strip()
     assert os.path.basename(d).startswith(testserver.PREFIX) and not os.path.exists(d)
+
+
+MODELS_B = '''
+from sqlalchemy.orm import Mapped, mapped_column
+from omarchy_db import make_base
+Base = make_base()
+
+class Other(Base):
+    __tablename__ = "others"
+    id: Mapped[int] = mapped_column(primary_key=True, init=False)
+    label: Mapped[str]
+'''
+
+
+@pytest.fixture
+def two_apps(app):
+    """The `app` project plus a second app (`other`) added by dbtool init as a sub-table with its own migrations."""
+    (app / "other").mkdir()
+    (app / "other" / "__init__.py").write_text("")
+    (app / "other" / "models.py").write_text(textwrap.dedent(MODELS_B))
+    dbtool(app, "init", "--app", "other", "--models", "other.models:Base")
+    return app
+
+
+def test_several_apps_in_one_project(two_apps):
+    primary, other = Project.load(two_apps), Project.load(two_apps, "other")
+    assert primary.app.startswith("t") and "things" in primary.metadata.tables
+    assert other.app == "other" and other.schema == "other" and other.migrations_dir == two_apps / "migrations_other"
+    assert "others" in other.metadata.tables and "things" not in other.metadata.tables
+    with pytest.raises(ValueError, match="has no app"):
+        Project.load(two_apps, "nope")
+    assert dbtool(two_apps, "init", "--app", "other", "--models", "m:B", check=False).returncode != 0   # not twice
+
+
+def test_apps_env_selects_and_primaryless_repo_refuses_to_guess(two_apps, monkeypatch):
+    monkeypatch.setenv("OMARCHY_DB_APP", "other")
+    assert Project.load(two_apps).app == "other"
+    monkeypatch.delenv("OMARCHY_DB_APP")
+    pp = two_apps / "pyproject.toml"
+    body = pp.read_text().replace("[tool.omarchy-db]\napp =", "[tool.omarchy-db.apps.first]\nnot_app =")
+    pp.write_text(body)
+    with pytest.raises(ValueError, match="several apps|no app|KeyError|models"):
+        Project.load(two_apps)
+
+
+def test_dbtool_revision_check_and_migrate_per_app(two_apps, tmp_path):
+    dbtool(two_apps, "revision", "-m", "initial", "--sqlite")
+    dbtool(two_apps, "-p", "other", "revision", "-m", "initial", "--sqlite")
+    assert len(list((two_apps / "migrations").glob("*.py"))) == 1
+    assert len(list((two_apps / "migrations_other").glob("*.py"))) == 1
+    dbtool(two_apps, "check", "--sqlite")
+    dbtool(two_apps, "-p", "other", "check", "--sqlite")
+    url = f"sqlite:///{tmp_path / 'live.db'}"
+    dbtool(two_apps, "-p", "other", "migrate", "--url", url)
+    names = set(inspect(connect(url)).get_table_names())
+    assert "others" in names and "things" not in names
+
+
+def test_pytest_fixtures_follow_the_db_app_marker(two_apps):
+    """Tests of different apps in one session each get their own migrated database (marker `db_app`)."""
+    dbtool(two_apps, "revision", "-m", "initial", "--sqlite")
+    dbtool(two_apps, "-p", "other", "revision", "-m", "initial", "--sqlite")
+    (two_apps / "test_apps.py").write_text(textwrap.dedent("""
+        import pytest
+        from sqlalchemy import inspect
+        from omarchy_db.testing import test_migrations, test_schema_matches_models  # noqa: F401
+
+        def tables(e): return set(inspect(e).get_table_names())
+
+        def test_primary(db_engine):
+            assert "things" in tables(db_engine) and "others" not in tables(db_engine)
+
+        @pytest.mark.db_app("other")
+        def test_other(db_engine, db_project):
+            assert db_project.app == "other" and "others" in tables(db_engine) and "things" not in tables(db_engine)
+
+        @pytest.mark.db_app("other")
+        def test_other_standard(db_engine, db_project):
+            from omarchy_db.migrations import drift
+            assert drift(db_engine, db_project.metadata) == []
+    """))
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", "-p", "no:cacheprovider"],
+                       cwd=two_apps, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
