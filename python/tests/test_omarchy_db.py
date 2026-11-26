@@ -515,3 +515,11 @@ def test_pytest_fixtures_follow_the_db_app_marker(two_apps):
     r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", "-p", "no:cacheprovider"],
                        cwd=two_apps, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_init_of_an_existing_app_is_refused_whatever_the_toml_quoting(app):
+    p = Project.load(app)
+    pp = app / "pyproject.toml"
+    pp.write_text(pp.read_text().replace(f'app = "{p.app}"', f"app='{p.app}'"))   # valid TOML, not the literal init writes
+    assert dbtool(app, "init", "--app", p.app, "--models", "m:B", check=False).returncode != 0
+    assert Project.load(app).app == p.app                                        # and nothing was written that breaks it

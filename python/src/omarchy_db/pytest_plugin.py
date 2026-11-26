@@ -67,13 +67,15 @@ def db_backend(request, db_project) -> str:
 
 
 # Templates are migrated once per (app, backend) for the whole run and dropped when it ends; the fixtures that use
-# them are per test, because a repo with several apps runs tests for different apps in one session.
-_templates: dict[tuple[str, str], str] = {}
+# them are per test, because a repo with several apps runs tests for different apps in one session. The cache lives on
+# the pytest config, so a second pytest.main() in the same process starts empty instead of reusing deleted templates.
+_TEMPLATES = pytest.StashKey[dict]()
 
 
 @pytest.fixture
 def _db_template(request, db_project, db_backend):
     key = (db_project.app, db_backend)
+    _templates = request.config.stash.setdefault(_TEMPLATES, {})
     if key not in _templates:
         if db_backend == "postgres":
             name = unique(f"omdb_tmpl_{db_project.app}")

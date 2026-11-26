@@ -24,6 +24,7 @@ while SQLite's (`0`) breaks Postgres; --sqlite forces SQLite. `check` runs on SQ
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -43,8 +44,9 @@ def _scratch_engine(url):
 def cmd_init(a):
     pp = Path.cwd() / "pyproject.toml"
     body = pp.read_text() if pp.exists() else f'[project]\nname = "{a.app}"\nversion = "0.1.0"\n'
-    if "[tool.omarchy-db]" in body:   # a further app of the same repo: its own sub-table and migrations folder
-        if f"[tool.omarchy-db.apps.{a.app}]" in body or f'app = "{a.app}"' in body:
+    cfg = tomllib.loads(body).get("tool", {}).get("omarchy-db")
+    if cfg is not None:   # a further app of the same repo: its own sub-table and migrations folder
+        if a.app in Project._entries(cfg):
             sys.exit(f"{pp} already has app {a.app}")
         mig = f"migrations_{a.app}"
         body = body.rstrip("\n") + f'\n\n[tool.omarchy-db.apps.{a.app}]\nmodels = "{a.models}"\nmigrations = "{mig}"\n' \
